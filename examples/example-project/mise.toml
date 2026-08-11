@@ -1,0 +1,9 @@
+# The tools this project needs, so a fresh checkout gets them with one `mise install`.
+#
+# what-changed is fetched from its GitHub releases: a single binary with no runtime to install.
+#
+# "latest" keeps this example from naming a version that goes stale. A real project should pin one,
+# so every machine and every CI run decides what to rebuild using the same tool.
+[tools]
+node = "24.15.0"
+"github:ashleydavis/what-changed" = "latest"

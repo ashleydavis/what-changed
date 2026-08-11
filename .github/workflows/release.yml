@@ -1,0 +1,344 @@
+#
+# Tests every push, and builds the single-file executable for each platform.
+#
+# The executable is built on every run so a broken build is caught immediately rather than at release
+# time, but it is only attached to a GitHub release when the run is for a v*.*.* tag or the nightly
+# build. Publishing is never a side effect of merging: a real release needs a tag.
+#
+# One job builds every platform. Zig cross-compiles without a toolchain per target, so there is no
+# reason to rent four runners to produce four binaries. The runners that remain are there to *test*
+# on a platform, which cross-compilation cannot do for you.
+#
+name: Release
+
+env:
+  ZIG_VERSION: "0.16.0"
+
+on:
+  push:
+    branches:
+      - "*"
+    tags:
+      - "v*.*.*"
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Release action. none = nightly build. new-patch = create the next patch tag (e.g. v0.0.7 -> v0.0.8) and release it."
+        type: choice
+        options:
+          - none
+          - new-patch
+        default: none
+
+jobs:
+  prepare-tag:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      is-release: ${{ steps.resolve.outputs.is-release }}
+      version: ${{ steps.resolve.outputs.version }}
+      build-date: ${{ steps.resolve.outputs.build-date }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: resolve
+        run: |
+          RELEASE_INPUT="${{ inputs.release }}"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+            IS_RELEASE="true"
+          elif [ "$RELEASE_INPUT" = "new-patch" ]; then
+            LATEST=$(git tag --list 'v*.*.*' --sort=-version:refname | head -1)
+            if [ -z "$LATEST" ]; then
+              LATEST="v0.0.0"
+            fi
+            MAJOR=$(echo "${LATEST#v}" | cut -d. -f1)
+            MINOR=$(echo "${LATEST#v}" | cut -d. -f2)
+            PATCH=$(echo "${LATEST#v}" | cut -d. -f3)
+            TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+            git tag "$TAG"
+            git push origin "$TAG"
+            IS_RELEASE="true"
+          else
+            TAG=""
+            IS_RELEASE="false"
+          fi
+
+          # Resolved once, here, rather than in each build job. Four jobs each running `date` would
+          # stamp four different build times into what is meant to be one build.
+          if [ "$IS_RELEASE" = "true" ]; then
+            VERSION="${TAG#v}"
+          else
+            VERSION="dev-nightly.$(date -u +"%Y%m%dT%H%M%S")"
+          fi
+
+          {
+            echo "tag=$TAG"
+            echo "is-release=$IS_RELEASE"
+            echo "version=$VERSION"
+            echo "build-date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          } >> $GITHUB_OUTPUT
+
+          echo "Resolved tag: '$TAG' (is-release: $IS_RELEASE, version: $VERSION)"
+
+  unit-tests:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Run unit tests
+        run: zig build test --summary all
+
+  perf-tests:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Run performance benchmarks
+        run: zig build perf
+
+  build:
+    needs: prepare-tag
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - zig-target: x86_64-linux
+            artifact: what-changed-linux-x64
+            binary: bin/x64/linux/what-changed
+          - zig-target: x86_64-windows
+            artifact: what-changed-windows-x64
+            binary: bin/x64/win/what-changed.exe
+          - zig-target: x86_64-macos
+            artifact: what-changed-macos-x64
+            binary: bin/x64/mac/what-changed
+          - zig-target: aarch64-macos
+            artifact: what-changed-macos-arm64
+            binary: bin/arm64/mac/what-changed
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: ./.github/actions/setup-zig
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Set version and build metadata
+        shell: bash
+        run: |
+          cat > src/lib/version.zig <<EOF
+          const std = @import("std");
+
+          //
+          // Which build this is. Written by the release workflow; a working copy reads "dev".
+          //
+
+          //
+          // Version is set by the CI build process. "dev" is used for local development.
+          //
+          pub const version = "${{ needs.prepare-tag.outputs.version }}";
+
+          //
+          // What a release build records about itself.
+          //
+          pub const BuildMetadata = struct {
+              commit_hash: []const u8,
+              build_date: []const u8,
+              is_nightly: bool,
+          };
+
+          //
+          // Build metadata is set by the CI build process.
+          //
+          pub const build_metadata = BuildMetadata{
+              .commit_hash = "${{ github.sha }}",
+              .build_date = "${{ needs.prepare-tag.outputs.build-date }}",
+              .is_nightly = ${{ needs.prepare-tag.outputs.is-release != 'true' }},
+          };
+
+          const testing = std.testing;
+
+          test "the version is a non-empty string" {
+              try testing.expect(version.len > 0);
+          }
+
+          test "the build metadata is filled in" {
+              try testing.expect(build_metadata.commit_hash.len > 0);
+              try testing.expect(build_metadata.build_date.len > 0);
+          }
+          EOF
+          cat src/lib/version.zig
+
+      # The stamped file has to compile and its tests still pass. A version.zig written with a stray
+      # quote would otherwise fail four builds with an error about the wrong thing entirely.
+      - name: Check the stamped version file
+        run: zig build test --summary all
+
+      - name: Build ${{ matrix.zig-target }}
+        run: zig build release -Dtarget=${{ matrix.zig-target }}
+
+      - name: Upload ${{ matrix.artifact }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.binary }}
+          if-no-files-found: error
+
+  #
+  # The scenarios the source is put through, against the thing that actually ships, on the platform
+  # it ships for. Cross-compilation gets the binaries built but proves nothing about whether they
+  # run, so each one is exercised on a native runner.
+  #
+  smoke-tests:
+    needs: build
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: what-changed-linux-x64
+            binary-dir: bin/x64/linux
+          - os: macos-latest
+            artifact: what-changed-macos-arm64
+            binary-dir: bin/arm64/mac
+          - os: macos-15-intel
+            artifact: what-changed-macos-x64
+            binary-dir: bin/x64/mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download ${{ matrix.artifact }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.binary-dir }}
+
+      # The executable bit does not survive an upload-artifact round trip.
+      - name: Make it executable
+        run: chmod +x ${{ matrix.binary-dir }}/what-changed
+
+      - name: Check the executable runs
+        run: ./${{ matrix.binary-dir }}/what-changed --help
+
+      - name: Run smoke tests against the executable
+        run: ./scripts/smoke-tests.sh --binary
+
+  #
+  # Windows gets the same treatment, in its own job because the smoke test script is bash and the
+  # path to the binary differs. Run under the shell Git for Windows ships, which every Windows
+  # runner has.
+  #
+  smoke-tests-windows:
+    needs: build
+    timeout-minutes: 15
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download what-changed-windows-x64
+        uses: actions/download-artifact@v4
+        with:
+          name: what-changed-windows-x64
+          path: bin/x64/win
+
+      - name: Check the executable runs
+        run: ./bin/x64/win/what-changed.exe --help
+
+  create-release:
+    timeout-minutes: 15
+    needs: [prepare-tag, unit-tests, perf-tests, build, smoke-tests, smoke-tests-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download every artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      # The executable bit does not survive an upload-artifact round trip, so it is set again here
+      # before the archive is made. Without this every Linux and macOS download arrives unrunnable.
+      - name: Create compressed archives
+        run: |
+          cd ./artifacts/what-changed-linux-x64      && chmod +x what-changed && tar -czf ../what-changed-linux-x64.tar.gz what-changed && cd ../..
+          cd ./artifacts/what-changed-macos-x64      && chmod +x what-changed && tar -czf ../what-changed-macos-x64.tar.gz what-changed && cd ../..
+          cd ./artifacts/what-changed-macos-arm64    && chmod +x what-changed && tar -czf ../what-changed-macos-arm64.tar.gz what-changed && cd ../..
+          cd ./artifacts/what-changed-windows-x64    && zip ../what-changed-windows-x64.zip what-changed.exe && cd ../..
+          ls -la ./artifacts
+
+      - name: Delete existing nightly release
+        if: needs.prepare-tag.outputs.is-release != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete nightly --yes --cleanup-tag || true
+        continue-on-error: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.prepare-tag.outputs.is-release == 'true' && needs.prepare-tag.outputs.tag || 'nightly' }}
+          name: ${{ needs.prepare-tag.outputs.is-release == 'true' && format('what-changed {0}', needs.prepare-tag.outputs.tag) || 'what-changed Nightly' }}
+          draft: false
+          prerelease: ${{ needs.prepare-tag.outputs.is-release != 'true' }}
+          files: |
+            ./artifacts/what-changed-linux-x64.tar.gz
+            ./artifacts/what-changed-windows-x64.zip
+            ./artifacts/what-changed-macos-x64.tar.gz
+            ./artifacts/what-changed-macos-arm64.tar.gz
+          body: |
+            ${{ needs.prepare-tag.outputs.is-release == 'true' && format('what-changed release {0}', needs.prepare-tag.outputs.tag) || format('what-changed nightly build - {0}', github.sha) }}
+
+            ${{ needs.prepare-tag.outputs.is-release != 'true' && '⚠️ **This is a nightly build and may be unstable**' || '' }}
+
+            ## Download
+            - **Linux**: `what-changed-linux-x64.tar.gz`
+            - **Windows**: `what-changed-windows-x64.zip`
+            - **macOS (Intel)**: `what-changed-macos-x64.tar.gz`
+            - **macOS (Apple Silicon)**: `what-changed-macos-arm64.tar.gz`
+
+            ## Installation
+            1. Download the file for your platform
+            2. Extract the archive
+            3. Make it executable (Linux/macOS): `chmod +x what-changed`
+            4. Move it onto your PATH, or run it directly
+
+            No runtime is required. The executable has everything in it. The only thing it needs from
+            the machine is `git` on the PATH.

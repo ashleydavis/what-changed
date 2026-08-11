@@ -1,0 +1,9 @@
+{
+    "name": "example-project",
+    "private": true,
+    "type": "module",
+    "description": "A tiny project showing what-changed deciding whether the tests need to run.",
+    "scripts": {
+        "test": "node --test && what-changed baseline capture test"
+    }
+}

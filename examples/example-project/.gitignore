@@ -1,0 +1,5 @@
+node_modules/
+
+# Where what-changed keeps the baseline and its file hash cache. Both have to be ignored, or the
+# tool would see its own writes as a change on every run.
+.what-changed/

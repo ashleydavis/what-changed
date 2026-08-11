@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Refuses a commit whose tests do not pass.
+#
+# Runs `./scripts/test-everything.sh`, which asks what-changed which targets have changes and runs only
+# those. A docs-only change runs nothing and the commit goes straight through; a change under src
+# runs compile, the unit tests, the smoke tests and the benchmarks.
+#
+# Nothing here fixes or stages anything: it reports and refuses, leaving the working copy alone.
+#
+# Bypass with `git commit --no-verify` (git handles that natively; there is no flag here).
+#
+# Named without a .sh extension against the repository's usual convention because git only recognises
+# hooks by these exact filenames.
+set -uo pipefail
+
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$HOOK_DIR/.." && pwd)"
+
+cd "$REPO_DIR"
+
+echo "pre-commit: running the tests for whatever changed"
+
+# Goes through mise when it is available so the pinned Zig version is used rather than whatever
+# happens to be first on PATH.
+run_everything() {
+    if command -v mise >/dev/null 2>&1; then
+        mise exec -- ./scripts/test-everything.sh
+    else
+        ./scripts/test-everything.sh
+    fi
+}
+
+if ! run_everything; then
+    echo "" >&2
+    echo "pre-commit FAILED. Commit anyway with: git commit --no-verify" >&2
+    exit 1
+fi
+
+echo "pre-commit: passed"

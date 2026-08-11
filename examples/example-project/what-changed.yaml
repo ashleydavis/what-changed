@@ -1,0 +1,18 @@
+# Which files decide whether this project's targets need to run.
+#
+# See ../configs/ for the same format written out with every field explained.
+
+# Watched by every target, because a change here can affect anything.
+always:
+  - package.json
+
+# Never looked at. A change to a markdown file cannot make the tests need to run.
+ignore:
+  - .md
+
+targets:
+  # One target: the test suite. It runs when anything under src or test changes.
+  - name: test
+    paths:
+      - src
+      - test

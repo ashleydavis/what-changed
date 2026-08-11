@@ -1,0 +1,30 @@
+.{
+    // The package name, as an enum literal rather than a string.
+    .name = .what_changed,
+
+    // Matches the version the TypeScript package reports, so the two ports stay recognisably the
+    // same tool rather than drifting into separate version lines.
+    .version = "0.0.1",
+
+    // The oldest compiler this builds with. 0.16 is the current stable release; its filesystem API
+    // lives under std.Io, which earlier versions do not have.
+    .minimum_zig_version = "0.16.0",
+
+    // Identifies the package to the build system. Generated once and never changed.
+    .fingerprint = 0xe0e32710211445a8,
+
+    // What goes into a package of this project. Everything else (build outputs, throwaway trees)
+    // is deliberately left out.
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "perf-tests",
+        "scripts",
+        "docs",
+        "examples",
+        "README.md",
+        "LICENSE",
+        "what-changed.yaml",
+    },
+}

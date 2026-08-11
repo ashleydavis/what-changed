@@ -1,0 +1,61 @@
+# what-changed configuration, in YAML.
+#
+# YAML is the format the tool leads with. See what-changed.json for the same configuration written
+# in JSON.
+#
+# Every field except "targets" is optional. Copy this to the root of your project as
+# "what-changed.yaml" and edit the targets.
+
+# Where the file hash cache is kept, relative to this file. Optional.
+#
+# Nothing in here affects what is reported, so deleting it costs one slow run and nothing else.
+# Must be gitignored: the tool lists untracked files, so an un-ignored cache would show up as a
+# change to itself on every run.
+cacheDir: .what-changed/cache
+
+# Where the baseline is recorded, relative to this file. Optional.
+#
+# This is the reference point that "changed" is measured against, so losing it changes the answer.
+# It is kept apart from the cache for exactly that reason. Must also be gitignored.
+baselinePath: .what-changed/baseline.json
+
+# Paths that fall under every target, for things that affect the whole project. Optional.
+always:
+  - package.json
+  - package-lock.json
+  - mise.toml
+
+# File extensions left out entirely, each with its leading dot, matched case-insensitively.
+# Optional. A file of an ignored type can never be reported as changed.
+ignore:
+  - .md
+  - .txt
+  - .log
+
+# One target per thing you would want to run. Required, and must not be empty.
+#
+# A changed file is reported under every target whose paths it falls under, so a file can land in
+# several. A changed file under no target at all is reported separately, because that is usually a
+# gap in this config rather than a deliberate choice.
+targets:
+  - name: compile
+    paths:
+      - src
+
+  - name: test
+    paths:
+      - src
+
+  - name: e2e
+    paths:
+      - src
+      - e2e
+
+  # A target can be limited to certain platforms, matched against process.platform. Optional; with
+  # no platforms listed a target applies everywhere.
+  - name: mobile
+    paths:
+      - mobile
+    platforms:
+      - linux
+      - darwin

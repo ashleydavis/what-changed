@@ -1,0 +1,63 @@
+#
+# Puts a pinned Zig on the PATH.
+#
+# Downloaded straight from ziglang.org rather than through a third-party action. Zig is one tarball
+# with the compiler and the standard library in it and nothing to install, so an action would only be
+# wrapping four lines of shell, and it would be one more thing that can break the build by changing
+# under us.
+#
+# The version is pinned by the caller, from ZIG_VERSION in the workflow, so the CI compiler and the
+# one in mise.toml are set in one place each and can be checked against each other by eye.
+#
+name: Setup Zig
+description: Downloads a pinned Zig release and puts it on the PATH.
+
+inputs:
+  version:
+    description: The Zig version to install, for example 0.15.2.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Download and install Zig ${{ inputs.version }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        case "$(uname -s)" in
+          Linux)  OS="linux" ;;
+          Darwin) OS="macos" ;;
+          *)      echo "This action does not know how to install Zig on $(uname -s)." >&2; exit 1 ;;
+        esac
+
+        case "$(uname -m)" in
+          x86_64)         ARCH="x86_64" ;;
+          arm64|aarch64)  ARCH="aarch64" ;;
+          *)              echo "This action does not know how to install Zig for $(uname -m)." >&2; exit 1 ;;
+        esac
+
+        # The naming ziglang.org uses is <arch>-<os>, which is the opposite way round from how Zig
+        # itself spells a target on the command line. Getting it backwards gives a 404 rather than
+        # anything that explains itself, which is why it is written out here.
+        NAME="zig-${ARCH}-${OS}-${{ inputs.version }}"
+        URL="https://ziglang.org/download/${{ inputs.version }}/${NAME}.tar.xz"
+
+        echo "Downloading $URL"
+        curl --fail --silent --show-error --location --retry 3 --retry-delay 5 -o /tmp/zig.tar.xz "$URL"
+
+        mkdir -p "$HOME/zig"
+        tar -xJf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
+
+        echo "$HOME/zig" >> "$GITHUB_PATH"
+
+    - name: Check the compiler runs and is the version asked for
+      shell: bash
+      run: |
+        set -euo pipefail
+        INSTALLED="$(zig version)"
+        echo "zig version: $INSTALLED"
+        if [ "$INSTALLED" != "${{ inputs.version }}" ]; then
+          echo "Expected Zig ${{ inputs.version }} but got $INSTALLED." >&2
+          exit 1
+        fi

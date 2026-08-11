@@ -1,0 +1,33 @@
+# what-changed's own configuration.
+#
+# See examples/ for the same thing written in JSON, and for what every field means.
+
+always:
+  - build.zig
+  - build.zig.zon
+  - mise.toml
+  - what-changed.yaml
+  - scripts
+
+ignore:
+  - .md
+  - .txt
+  - .log
+
+targets:
+  - name: compile
+    paths:
+      - src
+
+  - name: test
+    paths:
+      - src
+
+  - name: smoke
+    paths:
+      - src
+
+  - name: perf
+    paths:
+      - src
+      - perf-tests

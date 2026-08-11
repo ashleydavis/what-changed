@@ -1,0 +1,45 @@
+{
+    "cacheDir": ".what-changed/cache",
+    "baselinePath": ".what-changed/baseline.json",
+    "always": [
+        "package.json",
+        "package-lock.json",
+        "mise.toml"
+    ],
+    "ignore": [
+        ".md",
+        ".txt",
+        ".log"
+    ],
+    "targets": [
+        {
+            "name": "compile",
+            "paths": [
+                "src"
+            ]
+        },
+        {
+            "name": "test",
+            "paths": [
+                "src"
+            ]
+        },
+        {
+            "name": "e2e",
+            "paths": [
+                "src",
+                "e2e"
+            ]
+        },
+        {
+            "name": "mobile",
+            "paths": [
+                "mobile"
+            ],
+            "platforms": [
+                "linux",
+                "darwin"
+            ]
+        }
+    ]
+}
