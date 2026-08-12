@@ -8,9 +8,9 @@ const Failure = failure.Failure;
 //
 // Reading and writing the subset of YAML this tool's config files are written in.
 //
-// The TypeScript hands this job to the `yaml` package. Zig's standard library has no YAML, and the
-// alternative to writing this was taking a package dependency, so this is a deliberate, bounded
-// re-implementation: block mappings, block sequences, flow sequences and mappings on one line,
+// Zig's standard library has no YAML, and the alternative to writing this was taking a package
+// dependency, so this is a deliberate, bounded implementation: block mappings, block sequences,
+// flow sequences and mappings on one line,
 // comments, quoted and plain scalars. That is everything the documented config format uses and
 // everything the examples show.
 //
@@ -854,10 +854,9 @@ fn writeIndent(out: *std.ArrayList(u8), allocator: std.mem.Allocator, indent: us
 }
 
 //
-// Renders a value as YAML, matching what the `yaml` package prints for the same value.
+// Renders a value as YAML.
 //
-// No trailing newline, because the caller prints the result as one line of output and adds its own,
-// which is what the TypeScript does when it trims the end of the rendered document.
+// No trailing newline, because the caller prints the result as one line of output and adds its own.
 //
 pub fn stringify(allocator: std.mem.Allocator, root: Value) std.mem.Allocator.Error![]const u8 {
     var out: std.ArrayList(u8) = .empty;

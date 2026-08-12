@@ -601,9 +601,8 @@ const testing = std.testing;
 //
 // A file lister that answers with a fixed list, so the flow can be driven without a git repository.
 //
-// The list is a module-level value because a Zig function pointer carries no captured state. That is
-// the one place this port cannot mirror the TypeScript, which closes over the list; the effect is
-// the same and a test sets it just before the run it belongs to.
+// The list is a module-level value because a Zig function pointer carries no captured state, so the
+// fake lister has nowhere else to keep it. A test sets it just before the run it belongs to.
 //
 var fake_file_list: []const []const u8 = &.{};
 

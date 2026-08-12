@@ -4,13 +4,9 @@ const value = @import("value.zig");
 //
 // A map of repository-relative path to content hash.
 //
-// The TypeScript has two spellings of this: `Map<string, string>` for the tree it just hashed, and
-// `IFileHashes`, a plain object, for the same thing once it has been written to or read from a JSON
-// file. They hold identical data and the code converts between them constantly.
-//
-// Here they are one type. `std.StringArrayHashMapUnmanaged` keeps its keys in insertion order, which
-// is what a JSON object does too, so one type covers both uses and the conversions the TypeScript
-// needs disappear.
+// One type covers both uses: the tree that was just hashed, and the same thing read back out of a
+// JSON file. `std.StringArrayHashMapUnmanaged` keeps its keys in insertion order, which is what a
+// JSON object does too, so nothing has to be converted between the two.
 //
 pub const FileHashes = std.StringArrayHashMapUnmanaged([]const u8);
 

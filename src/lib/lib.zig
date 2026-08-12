@@ -21,12 +21,12 @@
 pub const failure = @import("failure.zig");
 
 //
-// The dynamic value that stands in for TypeScript's `any`.
+// The value used wherever the structure is not known at compile time.
 //
 pub const value = @import("value.zig");
 
 //
-// Reading and writing JSON, in place of the language's own JSON.parse and JSON.stringify.
+// Reading and writing JSON.
 //
 pub const json = @import("json.zig");
 

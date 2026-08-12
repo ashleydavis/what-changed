@@ -1,13 +1,11 @@
 const std = @import("std");
 
 //
-// How this port carries the message that goes with a failure.
+// How the message that goes with a failure is carried.
 //
-// The TypeScript throws `new Error("...")` and the CLI's catch prints `err.message`. Zig errors are
-// bare enum values and cannot carry a string, so the string travels beside the error instead: every
-// function that can fail takes a `*Failure`, fills in its message, and returns `error.Failed`. The
-// top of the CLI prints whatever is in there, which reproduces the TypeScript behaviour exactly,
-// including the wording of every message.
+// Zig errors are bare enum values and cannot carry a string, so the string travels beside the error
+// instead: every function that can fail takes a `*Failure`, fills in its message, and returns
+// `error.Failed`. The top of the CLI prints whatever is in there.
 //
 // This is deliberately not one error value per failure mode. Nothing in this tool branches on which
 // failure happened: every one of them ends the same way, printed to stderr with exit code 1. What

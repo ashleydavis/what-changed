@@ -24,15 +24,6 @@ const Context = wc.run.Context;
 //
 
 //
-// How big a buffer stdout gets.
-//
-// Output is one report of at most a few thousand lines, so this holds most runs in a single write.
-// It matters more than it looks: an unbuffered writer makes a syscall per line, and a report of a
-// thousand changed files would then be a thousand syscalls.
-//
-const STDOUT_BUFFER_BYTES = 64 * 1024;
-
-//
 // The extra text under the program's own help.
 //
 const HELP_EXAMPLES =
@@ -56,9 +47,6 @@ const HELP_EXAMPLES =
 
 //
 // Builds the whole command line: the program, its options, and every subcommand.
-//
-// The same definition as the TypeScript's `main`, in the same order, so the two can be read side by
-// side.
 //
 pub fn buildProgram(context: *const Context) *commander.Command {
     const program = commander.program(context.allocator)
@@ -94,8 +82,7 @@ pub fn main(init: std.process.Init) u8 {
     //
     const allocator = init.arena.allocator();
 
-    var stdout_buffer: [STDOUT_BUFFER_BYTES]u8 = undefined;
-    var stdout_file = std.Io.File.stdout().writer(init.io, &stdout_buffer);
+    var stdout_file = std.Io.File.stdout().writer(init.io, &.{});
     var out = Output{ .writer = &stdout_file.interface };
 
     var fail = Failure.init(allocator);
@@ -105,26 +92,17 @@ pub fn main(init: std.process.Init) u8 {
             _ = fail.set("what-changed ran out of memory.", .{}) catch {};
         }
 
-        var stderr_buffer: [512]u8 = undefined;
-        var stderr_file = std.Io.File.stderr().writer(init.io, &stderr_buffer);
-        const code = reportFailure(&fail, &stderr_file.interface);
-        stderr_file.interface.flush() catch {};
-        break :blk code;
+        var stderr_file = std.Io.File.stderr().writer(init.io, &.{});
+        break :blk reportFailure(&fail, &stderr_file.interface);
     };
 
     //
-    // Flushed before exiting, or a buffered report is thrown away when the process ends. The failure
-    // is noticed rather than ignored: output that never arrived is a failed run, however well the
-    // work behind it went.
+    // A write that failed is noticed rather than ignored: output that never arrived is a failed run,
+    // however well the work behind it went.
     //
-    stdout_file.interface.flush() catch {
-        out.failed = true;
-    };
     if (out.failed) {
-        var complaint: [128]u8 = undefined;
-        var stderr_file = std.Io.File.stderr().writer(init.io, &complaint);
+        var stderr_file = std.Io.File.stderr().writer(init.io, &.{});
         stderr_file.interface.writeAll("what-changed could not write its output.\n") catch {};
-        stderr_file.interface.flush() catch {};
         return 1;
     }
 
@@ -132,7 +110,7 @@ pub fn main(init: std.process.Init) u8 {
 }
 
 //
-// Prints a failure the way the TypeScript's catch does, and gives the exit code to use.
+// Prints a failure and gives the exit code to use.
 //
 // Takes the writer rather than reaching for stderr itself, so a test can read what it wrote instead
 // of the message landing in the middle of the test run's own output.
@@ -218,8 +196,9 @@ fn run(init: std.process.Init, allocator: std.mem.Allocator, out: *Output, fail:
 //
 // What this platform is called in a config's "platforms" list.
 //
-// The names are Node's, from `process.platform`, rather than Zig's own. A config has to mean the
-// same thing to both ports, and the TypeScript is what the existing configs were written against.
+// The names are Node's, from `process.platform`, rather than Zig's own, because that is what the
+// config files in the wild were written against. Changing them would silently stop every target
+// with a `platforms` list from matching.
 //
 pub fn platformName() []const u8 {
     return switch (builtin.os.tag) {
@@ -241,7 +220,7 @@ const harness = @import("cmd/harness.zig");
 test "platformName uses the names a config is written against" {
     //
     // Node's names, not Zig's: "darwin" rather than "macos", "win32" rather than "windows". A config
-    // saying `platforms: [darwin]` has to mean the same thing to both ports.
+    // saying `platforms: [darwin]` has to keep meaning macOS.
     //
     const name = platformName();
     try testing.expect(name.len > 0);
@@ -290,8 +269,8 @@ test "buildProgram declares every command the tool has" {
     }
 
     //
-    // The program declares no --config of its own. Declaring it in both places is what made the
-    // TypeScript resolve it to the program's copy, where nothing read it.
+    // The program declares no --config of its own. Declaring it in both places makes the parser
+    // resolve it to the program's copy, where nothing reads it.
     //
     try testing.expect(program.findOption("--config") == null);
     try testing.expect(program.positional_options);

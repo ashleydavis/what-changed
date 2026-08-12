@@ -56,10 +56,9 @@ pub fn hashFile(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, 
 
     const stat = files.statFile(io, full_path) catch {
         //
-        // Anything that stops the file being looked at is treated as the file not being there. The
-        // TypeScript only catches ENOENT and rethrows the rest, but every one of these means the
-        // same thing to the caller: there is no content here to hash. Reporting it as missing
-        // registers as a change, which is the safe direction.
+        // Anything that stops the file being looked at is treated as the file not being there.
+        // Every one of those errors means the same thing to the caller: there is no content here to
+        // hash. Reporting it as missing registers as a change, which is the safe direction.
         //
         return MISSING_FILE_HASH;
     };

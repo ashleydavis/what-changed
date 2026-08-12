@@ -54,12 +54,11 @@ pub fn parseOutputFormat(given: ?[]const u8, fail: *Failure) failure.Error!Outpu
 }
 
 //
-// Where a command's output goes, standing in for `console.log`.
+// Where a command's output goes.
 //
 // The reporting code prints a great many lines and none of them can usefully fail: if stdout has
-// gone away there is nothing to say and nowhere to say it. `console.log` in the TypeScript works the
-// same way, so this does too, and the reporting functions stay free of error handling that would
-// only ever describe a broken pipe.
+// gone away there is nothing to say and nowhere to say it. So printing does not return an error,
+// and the reporting functions stay free of handling that would only ever describe a broken pipe.
 //
 // The failure is recorded rather than dropped, so the CLI can still exit non-zero if the output
 // never made it anywhere. A caller that redirects into a full disk gets told.

@@ -3,12 +3,11 @@ const std = @import("std");
 //
 // The parts of `commander` this tool uses, in Zig.
 //
-// The TypeScript builds its command line by chaining calls onto a `Command`: a name, a description,
-// some options, sometimes an argument, and an action. This is that same builder, so the command
-// definitions in src/cmd read as nearly the same code as the ones in the TypeScript's src/cmd, and
-// the two can be held side by side and compared line for line.
+// A command line is built by chaining calls onto a `Command`: a name, a description, some options,
+// sometimes an argument, and an action. That is what the definitions in src/cmd are written
+// against.
 //
-// It is a port of what is used, not of commander. Missing on purpose: short option flags, boolean
+// It is an implementation of what is used, not of commander. Missing on purpose: short option flags, boolean
 // flags, option value parsers, `.requiredOption`, `.hook`, `.opts()` inheritance, variadic options,
 // and negatable `--no-` forms. None of them appear in this tool's command line, and each one would
 // be behaviour with no test to hold it honest.
@@ -17,17 +16,17 @@ const std = @import("std");
 // shell script driving this cannot be allowed to tell the difference. `scripts/smoke-tests.sh`
 // asserts on both.
 //
-// The one shape that could not carry over is the closure. `.action(async options => ...)` captures
-// whatever the surrounding function had; a Zig function pointer captures nothing. So an action takes
-// a context pointer that was handed to `.action` alongside it, which is the same information
-// arriving by a different route.
+// The one thing commander does that cannot be copied is the closure: its actions capture whatever
+// the surrounding function had, and a Zig function pointer captures nothing. So an action takes a
+// context pointer that was handed to `.action` alongside it, which is the same information arriving
+// by a different route.
 //
 
 //
 // How wide the left column of the help is before a description starts.
 //
-// Commander lays its help out in two columns and wraps the right one. The number is what its own
-// output measures, so a `--help` from either port lines up.
+// The help is laid out in two columns with the right one wrapped. The number is what commander's
+// own output measures, which is what the smoke tests assert against.
 //
 const HELP_TERM_WIDTH = 19;
 
@@ -107,8 +106,8 @@ pub const Argument = struct {
 //
 // The values an action reads: the options it was given, and the positional arguments.
 //
-// This is what the TypeScript's action receives as `(targetNames, options)`, with the same contents
-// under the same names.
+// This is what an action is handed: the positional arguments it was called with, and every option
+// that was given or has a default.
 //
 pub const Invocation = struct {
     //
@@ -127,8 +126,7 @@ pub const Invocation = struct {
     values: std.StringArrayHashMapUnmanaged([]const u8),
 
     //
-    // What the process should exit with. An action sets this, which is what the TypeScript does when
-    // it assigns to `process.exitCode`.
+    // What the process should exit with. An action sets it, and `parse` hands it back to `main`.
     //
     exit_code: u8 = 0,
 
@@ -148,8 +146,7 @@ pub const ActionFn = *const fn (invocation: *Invocation) anyerror!void;
 //
 // One command, and everything it was defined with.
 //
-// Every builder method returns the command so calls can be chained, which is what makes the
-// definitions read like the TypeScript's.
+// Every builder method returns the command, so a whole definition is one chain of calls.
 //
 pub const Command = struct {
     allocator: std.mem.Allocator,
@@ -216,14 +213,14 @@ pub const Command = struct {
     //
     // Whether an option after a subcommand's name belongs to that subcommand.
     //
-    // Off by default, exactly as in commander, and turned on by the same commands that turn it on
-    // in the TypeScript. Without it `--config` after a subcommand resolves to the parent's copy,
-    // where nothing reads it, and the flag is accepted, silently ignored, and the default used.
+    // Off by default, exactly as in commander. Without it `--config` after a subcommand resolves to
+    // the parent's copy, where nothing reads it, and the flag is accepted, silently ignored, and
+    // the default used.
     //
     positional_options: bool = false,
 
     //
-    // Makes a command. `new Command("summary")` in the TypeScript.
+    // Makes a command.
     //
     // Panics if there is no memory, rather than returning an error, which is what every builder
     // method below does too. The command tree is built once at startup out of string literals: if
@@ -257,8 +254,8 @@ pub const Command = struct {
     }
 
     //
-    // Adds an option. `default_value` is what the TypeScript passes as commander's third argument,
-    // and null is what it means to leave that argument off.
+    // Adds an option. A null `default_value` means the option has no default, so reading it when it
+    // was not given answers null.
     //
     pub fn option(self: *Command, flags: []const u8, text: []const u8, default_value: ?[]const u8) *Command {
         self.options.append(self.allocator, .{

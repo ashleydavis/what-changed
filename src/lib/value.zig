@@ -1,21 +1,20 @@
 const std = @import("std");
 
 //
-// The dynamic value that stands in for TypeScript's `any`.
+// The value used wherever the structure is not known at compile time.
 //
-// Three places in the TypeScript deal in values whose structure is not known at compile time: the
-// parsed config (which may be malformed in any way at all), the JSON read back off disk, and the
-// object handed to `--output json` / `--output yaml`. All three are `any` there.
+// Three things in this tool are like that: the parsed config, which may be malformed in any way at
+// all, the JSON read back off disk, and the object handed to `--output json` / `--output yaml`.
 //
-// Zig has no `any`, so all three use `std.json.Value`, which is exactly that: a tagged union over
-// null, bool, number, string, array and object. Using the standard library's type rather than a
-// hand-rolled one means `std.json` parses and renders it for free, and both the YAML parser and the
-// YAML renderer in this project work on the same type, so a config in either format lands in an
-// identical structure and every check downstream is written once.
+// All three use `std.json.Value`, a tagged union over null, bool, number, string, array and object.
+// Using the standard library's type rather than a hand-rolled one means `std.json` parses and
+// renders it for free, and both the YAML parser and the YAML renderer in this project work on the
+// same type, so a config in either format lands in an identical structure and every check
+// downstream is written once.
 //
 // Objects preserve insertion order (`std.json.ObjectMap` is an array hash map). That is not a
-// detail: JSON.stringify prints an object's keys in insertion order, so preserving it is what lets
-// this port's `--output json` match the TypeScript's byte for byte.
+// detail: it is what makes the rendered output depend on the document rather than on a hash seed,
+// so two runs over the same input print the same bytes.
 //
 
 //
@@ -76,7 +75,7 @@ pub fn int(value: i64) Value {
 }
 
 //
-// Reads a field off a value, the way `parsed.targets` does in the TypeScript.
+// Reads a field off a value.
 //
 // Anything that is not an object has no fields, so it answers null rather than failing. That is
 // what lets the config checks read a field and then complain about its value, instead of having to
@@ -92,20 +91,17 @@ pub fn get(value: Value, key: []const u8) ?Value {
 //
 // True for a plain object, which is what both halves of the baseline have to be.
 //
-// Mirrors `isPlainObject` in baseline-store.ts. In TypeScript arrays are objects too, so that check
-// has to exclude them explicitly; here an array is a different tag and the check falls out.
+// An array is a different tag, so it is excluded without having to be named.
 //
 pub fn isPlainObject(value: Value) bool {
     return value == .object;
 }
 
 //
-// Renders a value the way `JSON.stringify(value)` does when it is dropped into an error message:
-// compact, with no whitespace at all.
+// Renders a value for dropping into an error message: compact, with no whitespace at all.
 //
-// A missing field renders as "undefined", which is what the TypeScript prints. `JSON.stringify`
-// returns `undefined` for an absent value and the template literal around it turns that into the
-// word, so a config missing a field entirely says `got undefined` rather than `got null`.
+// A missing field renders as "undefined" rather than "null", so a config that leaves a field out
+// entirely reads as `got undefined`, which is a different complaint from one that set it to null.
 //
 pub fn describe(allocator: std.mem.Allocator, value: ?Value) std.mem.Allocator.Error![]const u8 {
     const present = value orelse return allocator.dupe(u8, "undefined");
@@ -165,7 +161,7 @@ test "isPlainObject accepts objects and rejects everything else" {
     try testing.expect(!isPlainObject(int(3)));
 }
 
-test "describe renders values compactly, like JSON.stringify" {
+test "describe renders values compactly, for dropping into a message" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();

@@ -32,8 +32,7 @@ pub fn buildSummaryCommand(context: *const Context) *Command {
 //
 // The action, which reads its options and hands them on.
 //
-// The TypeScript closes over nothing here and reads `options` straight from commander. A Zig
-// function pointer captures nothing at all, so the context arrives through the invocation instead.
+// A Zig function pointer captures nothing, so the context arrives through the invocation instead.
 //
 fn action(invocation: *commander.Invocation) anyerror!void {
     const context: *const Context = @ptrCast(@alignCast(invocation.context));
@@ -86,7 +85,7 @@ test "summaryCommand honours --output" {
     try testing.expect(std.mem.indexOf(u8, scenario.printed(), "\"appliesHere\"") != null);
 }
 
-test "buildSummaryCommand declares the command the way the TypeScript does" {
+test "buildSummaryCommand declares the options and help the command line promises" {
     var scenario = try harness.Scenario.create();
     defer scenario.destroy();
 

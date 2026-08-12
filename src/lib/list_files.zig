@@ -9,8 +9,8 @@ const Failure = failure.Failure;
 // The most output `git ls-files` may produce before this gives up.
 //
 // A path averages well under 100 bytes, so this clears a repository of several hundred thousand
-// files. The TypeScript sets the same ceiling, for the same reason: a runaway output has to stop
-// somewhere rather than being read into memory without limit.
+// files. A ceiling is needed at all because a runaway output has to stop somewhere rather than
+// being read into memory without limit.
 //
 const MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024;
 
@@ -138,7 +138,7 @@ test "isIgnoredFile ignores case" {
 
 test "isIgnoredFile matches any suffix, not only a file extension" {
     //
-    // The rule is "ends with", which is what the TypeScript does, so a compound suffix works.
+    // The rule is "ends with", not "matches the last dot", so a compound suffix works.
     //
     try testing.expect(isIgnoredFile("src/a.test.ts", &.{".test.ts"}));
     try testing.expect(!isIgnoredFile("src/a.ts", &.{".test.ts"}));

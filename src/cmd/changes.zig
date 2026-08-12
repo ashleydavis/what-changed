@@ -70,7 +70,7 @@ test "changesCommand honours --output" {
     try testing.expect(std.mem.indexOf(u8, scenario.printed(), "\"changed\"") != null);
 }
 
-test "buildChangesCommand declares the command the way the TypeScript does" {
+test "buildChangesCommand declares the options and help the command line promises" {
     var scenario = try harness.Scenario.create();
     defer scenario.destroy();
 

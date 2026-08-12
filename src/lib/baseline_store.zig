@@ -9,8 +9,8 @@ const Value = value.Value;
 const Failure = failure.Failure;
 
 //
-// A map of repository-relative path to content hash. Re-exported here because this is the module the
-// TypeScript declares it in, and everything that stores hashes reaches for it through this name.
+// A map of repository-relative path to content hash. Re-exported here because everything that
+// stores hashes reaches for it through this module.
 //
 pub const FileHashes = file_hashes_module.FileHashes;
 

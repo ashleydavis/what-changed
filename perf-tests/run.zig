@@ -25,9 +25,9 @@ const FILE_SIZE_BYTES = 512;
 // The slowest a single warm check is allowed to be, in milliseconds per file. A warm check is one
 // `stat` and a map lookup, so anything approaching a millisecond per file means something is wrong.
 //
-// The same number the TypeScript uses. It is not a target either port is near: it is there to catch
-// a change that makes the warm path read files again, which would show up as a jump to the cold
-// numbers, not to police small variations between machines.
+// Nowhere near what a warm check actually costs. It is there to catch a change that makes the warm
+// path read files again, which shows up as a jump towards the cold numbers, not to police small
+// variations between machines.
 //
 const WARM_BUDGET_MS_PER_FILE = 0.15;
 

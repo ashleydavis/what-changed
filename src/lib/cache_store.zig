@@ -88,8 +88,8 @@ pub fn writeJsonFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8,
 //
 // A name no other writer will pick, for a temporary file.
 //
-// The TypeScript uses randomUUID. This uses the same amount of randomness from the same kind of
-// source; the exact spelling does not matter, because nothing ever reads these names back.
+// Sixteen random bytes from the platform's own source. The exact spelling does not matter, because
+// nothing ever reads these names back.
 //
 pub fn randomName(io: std.Io, allocator: std.mem.Allocator) std.mem.Allocator.Error![]const u8 {
     var raw: [16]u8 = undefined;
@@ -367,7 +367,7 @@ test "writeJsonFile leaves no temporary file behind" {
     try testing.expectEqual(@as(usize, 1), count);
 }
 
-test "writeJsonFile writes what JSON.stringify with two spaces would" {
+test "writeJsonFile writes the JSON indented by two spaces" {
     var test_io = files.TestIo.init();
     defer test_io.deinit();
     const io = test_io.io();

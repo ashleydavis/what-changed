@@ -6,13 +6,11 @@ const Value = value.Value;
 const Failure = failure.Failure;
 
 //
-// Reading and writing JSON, standing in for the `JSON.parse` and `JSON.stringify` the TypeScript
-// gets from the language.
+// Reading and writing JSON.
 //
-// Both directions go through `std.json` rather than anything hand-written here, for the same reason
-// the TypeScript uses the built-ins: a hand-rolled parser is a source of bugs nobody is paid to
-// find. The only thing this file adds is the wrapping, so a parse failure carries a message in the
-// wording the TypeScript uses.
+// Both directions go through `std.json` rather than anything hand-written here: a hand-rolled
+// parser is a source of bugs nobody is paid to find. All this file adds is the wrapping, so a parse
+// failure carries a message worded like every other failure in the tool.
 //
 
 //
@@ -54,12 +52,11 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) error{ Syntax, OutO
 }
 
 //
-// Renders a value as JSON indented by two spaces, which is what `JSON.stringify(value, null, 2)`
-// produces.
+// Renders a value as JSON indented by two spaces.
 //
-// Two spaces, empty arrays as `[]` on one line, and empty objects as `{}` all match the TypeScript
-// exactly, which is what lets the two ports' `--output json` be compared directly and lets a
-// baseline file written by one be read by the other.
+// The exact formatting is fixed rather than incidental: two spaces, empty arrays as `[]` on one
+// line, empty objects as `{}`. `--output json` gets diffed between runs, and a baseline file
+// written by one run is read back by the next.
 //
 pub fn stringify(allocator: std.mem.Allocator, root: Value) std.mem.Allocator.Error![]const u8 {
     var rendered = std.Io.Writer.Allocating.init(allocator);
@@ -117,7 +114,7 @@ test "parse keeps object keys in the order they were written" {
     try testing.expectEqualStrings("m", keys[2]);
 }
 
-test "stringify indents by two spaces, like JSON.stringify with null and 2" {
+test "stringify indents by two spaces" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();

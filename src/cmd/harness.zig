@@ -17,9 +17,9 @@ const Output = wc.output.Output;
 //
 // The list the fake lister answers with.
 //
-// A module-level value because a Zig function pointer carries no captured state. This is the one
-// place the port cannot mirror the TypeScript, which closes over its list; the effect is the same,
-// and a scenario sets it as it writes the files.
+// A module-level value because a Zig function pointer carries no captured state, so the fake lister
+// has nowhere else to keep what it was told to answer with. A scenario sets it as it writes the
+// files.
 //
 var file_list: []const []const u8 = &.{};
 

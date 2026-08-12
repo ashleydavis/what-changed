@@ -3,9 +3,8 @@ const std = @import("std");
 //
 // Which build this is.
 //
-// Mirrors src/lib/version.ts. The values are placeholders that a release build rewrites, so a
-// working copy honestly reports that it is not a release rather than claiming a version it does not
-// have.
+// The values are placeholders that a release build rewrites, so a working copy reports that it is
+// not a release rather than claiming a version it does not have.
 //
 
 //

@@ -57,8 +57,8 @@ pub const ChangedFile = struct {
     previous_hash: []const u8,
 
     //
-    // Renders this change as the object the machine-readable formats print. The field names are the
-    // TypeScript's, so a script reading either port's JSON sees the same keys.
+    // Renders this change as the object the machine-readable formats print. The field names are
+    // part of the tool's output, so a script reading the JSON can rely on them.
     //
     pub fn toValue(self: ChangedFile, allocator: std.mem.Allocator) std.mem.Allocator.Error!value.Value {
         var object = value.newObject(allocator);
@@ -381,7 +381,7 @@ test "formatChangedFiles of nothing is nothing" {
     try testing.expectEqual(@as(usize, 0), (try formatChangedFiles(allocator, &.{})).len);
 }
 
-test "toValue renders a change with the TypeScript's field names" {
+test "toValue renders a change with the field names a script reads" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
