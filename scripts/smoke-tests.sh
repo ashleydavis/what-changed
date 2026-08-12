@@ -28,16 +28,24 @@ RUN_CLI=("bun" "$PROJECT_DIR/src/cli.ts")
 CLI_DESCRIPTION="source under bun"
 
 if [ "$1" = "--binary" ]; then
-    BINARY_PATH="$PROJECT_DIR/bin/x64/linux/what-changed"
-    if [ "$(uname -s)" = "Darwin" ]; then
+    # Which build to drive, from the platform this is running on. The layout is the one
+    # `zig build release` produces.
+    #
+    # Windows is picked out by the OS variable it sets, rather than by uname, which reports the
+    # name of whichever shell is emulating a POSIX system rather than the system underneath.
+    if [ "${OS:-}" = "Windows_NT" ]; then
+        BINARY_PATH="$PROJECT_DIR/bin/x64/win/what-changed.exe"
+    elif [ "$(uname -s)" = "Darwin" ]; then
         if [ "$(uname -m)" = "arm64" ]; then
             BINARY_PATH="$PROJECT_DIR/bin/arm64/mac/what-changed"
         else
             BINARY_PATH="$PROJECT_DIR/bin/x64/mac/what-changed"
         fi
+    else
+        BINARY_PATH="$PROJECT_DIR/bin/x64/linux/what-changed"
     fi
     if [ ! -x "$BINARY_PATH" ]; then
-        echo "No executable at $BINARY_PATH. Build it first, for example 'bun run build-linux'."
+        echo "No executable at $BINARY_PATH. Build it first with 'zig build release'."
         exit 1
     fi
     RUN_CLI=("$BINARY_PATH")

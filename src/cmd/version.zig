@@ -28,7 +28,7 @@ pub fn versionCommand(context: *const Context, output: ?[]const u8) wc.failure.E
         try object.put(allocator, "version", wc.value.str(wc.version.version));
         try object.put(allocator, "commitHash", wc.value.str(wc.version.build_metadata.commit_hash));
         try object.put(allocator, "buildDate", wc.value.str(wc.version.build_metadata.build_date));
-        try object.put(allocator, "isNightly", wc.value.boolean(wc.version.build_metadata.is_nightly));
+        try object.put(allocator, "isPreRelease", wc.value.boolean(wc.version.build_metadata.is_pre_release));
         try wc.output.printStructured(allocator, context.out, .{ .object = object }, format);
         return 0;
     }
@@ -41,8 +41,8 @@ pub fn versionCommand(context: *const Context, output: ?[]const u8) wc.failure.E
         if (!std.mem.eql(u8, wc.version.build_metadata.build_date, "development")) {
             context.out.line("Built: {s}", .{wc.version.build_metadata.build_date});
         }
-        if (wc.version.build_metadata.is_nightly) {
-            context.out.line("Type: nightly build", .{});
+        if (wc.version.build_metadata.is_pre_release) {
+            context.out.line("Type: pre-release build", .{});
         }
     } else {
         context.out.line("Built from source, not from a release.", .{});
@@ -112,7 +112,7 @@ test "versionCommand renders every field as json" {
     try testing.expect(std.mem.indexOf(u8, scenario.printed(), "\"version\"") != null);
     try testing.expect(std.mem.indexOf(u8, scenario.printed(), "\"commitHash\"") != null);
     try testing.expect(std.mem.indexOf(u8, scenario.printed(), "\"buildDate\"") != null);
-    try testing.expect(std.mem.indexOf(u8, scenario.printed(), "\"isNightly\"") != null);
+    try testing.expect(std.mem.indexOf(u8, scenario.printed(), "\"isPreRelease\"") != null);
 }
 
 test "versionCommand renders yaml too" {
@@ -122,7 +122,12 @@ test "versionCommand renders yaml too" {
     const context = scenario.context();
     _ = try versionCommand(&context, "yaml");
     try testing.expect(std.mem.indexOf(u8, scenario.printed(), "version:") != null);
-    try testing.expect(std.mem.indexOf(u8, scenario.printed(), "isNightly: false") != null);
+
+    //
+    // That the field is rendered, not what it holds. A tagged release stamps it false and a
+    // pre-release stamps it true, so asserting either value fails on exactly the builds that ship.
+    //
+    try testing.expect(std.mem.indexOf(u8, scenario.printed(), "isPreRelease:") != null);
 }
 
 test "versionCommand refuses an unknown format" {

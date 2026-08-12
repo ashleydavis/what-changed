@@ -28,9 +28,9 @@ pub const BuildMetadata = struct {
     build_date: []const u8,
 
     //
-    // Whether this is a nightly rather than a tagged release.
+    // Whether this is a pre-release rather than a tagged release.
     //
-    is_nightly: bool,
+    is_pre_release: bool,
 };
 
 //
@@ -39,7 +39,7 @@ pub const BuildMetadata = struct {
 pub const build_metadata = BuildMetadata{
     .commit_hash = "dev",
     .build_date = "development",
-    .is_nightly = false,
+    .is_pre_release = false,
 };
 
 const testing = std.testing;

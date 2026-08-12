@@ -2,8 +2,8 @@
 # Tests every push, and builds the single-file executable for each platform.
 #
 # The executable is built on every run so a broken build is caught immediately rather than at release
-# time, but it is only attached to a GitHub release when the run is for a v*.*.* tag or the nightly
-# build. Publishing is never a side effect of merging: a real release needs a tag.
+# time, but it is only attached to a GitHub release when the run is for a v*.*.* tag or the
+# pre-release build. Publishing is never a side effect of merging: a real release needs a tag.
 #
 # One job builds every platform. Zig cross-compiles without a toolchain per target, so there is no
 # reason to rent four runners to produce four binaries. The runners that remain are there to *test*
@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Release action. none = nightly build. new-patch = create the next patch tag (e.g. v0.0.7 -> v0.0.8) and release it."
+        description: "Release action. none = pre-release build. new-patch = create the next patch tag (e.g. v0.0.7 -> v0.0.8) and release it."
         type: choice
         options:
           - none
@@ -81,7 +81,7 @@ jobs:
           if [ "$IS_RELEASE" = "true" ]; then
             VERSION="${TAG#v}"
           else
-            VERSION="dev-nightly.$(date -u +"%Y%m%dT%H%M%S")"
+            VERSION="dev-pre-release.$(date -u +"%Y%m%dT%H%M%S")"
           fi
 
           {
@@ -173,7 +173,7 @@ jobs:
           pub const BuildMetadata = struct {
               commit_hash: []const u8,
               build_date: []const u8,
-              is_nightly: bool,
+              is_pre_release: bool,
           };
 
           //
@@ -182,7 +182,7 @@ jobs:
           pub const build_metadata = BuildMetadata{
               .commit_hash = "${{ github.sha }}",
               .build_date = "${{ needs.prepare-tag.outputs.build-date }}",
-              .is_nightly = ${{ needs.prepare-tag.outputs.is-release != 'true' }},
+              .is_pre_release = ${{ needs.prepare-tag.outputs.is-release != 'true' }},
           };
 
           const testing = std.testing;
@@ -216,7 +216,7 @@ jobs:
   #
   # The scenarios the source is put through, against the thing that actually ships, on the platform
   # it ships for. Cross-compilation gets the binaries built but proves nothing about whether they
-  # run, so each one is exercised on a native runner.
+  # run, so every one of them is exercised on a native runner, Windows included.
   #
   smoke-tests:
     needs: build
@@ -228,13 +228,25 @@ jobs:
           - os: ubuntu-latest
             artifact: what-changed-linux-x64
             binary-dir: bin/x64/linux
+            binary-name: what-changed
           - os: macos-latest
             artifact: what-changed-macos-arm64
             binary-dir: bin/arm64/mac
+            binary-name: what-changed
           - os: macos-15-intel
             artifact: what-changed-macos-x64
             binary-dir: bin/x64/mac
+            binary-name: what-changed
+          - os: windows-latest
+            artifact: what-changed-windows-x64
+            binary-dir: bin/x64/win
+            binary-name: what-changed.exe
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # Windows runners default to PowerShell. The smoke tests are a bash script, and the shell
+        # Git for Windows ships is already on every runner, so every platform runs the same steps.
+        shell: bash
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -245,41 +257,20 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.binary-dir }}
 
-      # The executable bit does not survive an upload-artifact round trip.
+      # The executable bit does not survive an upload-artifact round trip. Harmless on Windows,
+      # where the filesystem has no such bit and bash reports .exe files as executable anyway.
       - name: Make it executable
-        run: chmod +x ${{ matrix.binary-dir }}/what-changed
+        run: chmod +x ${{ matrix.binary-dir }}/${{ matrix.binary-name }}
 
       - name: Check the executable runs
-        run: ./${{ matrix.binary-dir }}/what-changed --help
+        run: ./${{ matrix.binary-dir }}/${{ matrix.binary-name }} --help
 
       - name: Run smoke tests against the executable
         run: ./scripts/smoke-tests.sh --binary
 
-  #
-  # Windows gets the same treatment, in its own job because the smoke test script is bash and the
-  # path to the binary differs. Run under the shell Git for Windows ships, which every Windows
-  # runner has.
-  #
-  smoke-tests-windows:
-    needs: build
-    timeout-minutes: 15
-    runs-on: windows-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download what-changed-windows-x64
-        uses: actions/download-artifact@v4
-        with:
-          name: what-changed-windows-x64
-          path: bin/x64/win
-
-      - name: Check the executable runs
-        run: ./bin/x64/win/what-changed.exe --help
-
   create-release:
     timeout-minutes: 15
-    needs: [prepare-tag, unit-tests, perf-tests, build, smoke-tests, smoke-tests-windows]
+    needs: [prepare-tag, unit-tests, perf-tests, build, smoke-tests]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -304,18 +295,18 @@ jobs:
           cd ./artifacts/what-changed-windows-x64    && zip ../what-changed-windows-x64.zip what-changed.exe && cd ../..
           ls -la ./artifacts
 
-      - name: Delete existing nightly release
+      - name: Delete the previous pre-release
         if: needs.prepare-tag.outputs.is-release != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release delete nightly --yes --cleanup-tag || true
+        run: gh release delete pre-release --yes --cleanup-tag || true
         continue-on-error: true
 
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ needs.prepare-tag.outputs.is-release == 'true' && needs.prepare-tag.outputs.tag || 'nightly' }}
-          name: ${{ needs.prepare-tag.outputs.is-release == 'true' && format('what-changed {0}', needs.prepare-tag.outputs.tag) || 'what-changed Nightly' }}
+          tag_name: ${{ needs.prepare-tag.outputs.is-release == 'true' && needs.prepare-tag.outputs.tag || 'pre-release' }}
+          name: ${{ needs.prepare-tag.outputs.is-release == 'true' && format('what-changed {0}', needs.prepare-tag.outputs.tag) || 'what-changed Pre-release' }}
           draft: false
           prerelease: ${{ needs.prepare-tag.outputs.is-release != 'true' }}
           files: |
@@ -324,9 +315,9 @@ jobs:
             ./artifacts/what-changed-macos-x64.tar.gz
             ./artifacts/what-changed-macos-arm64.tar.gz
           body: |
-            ${{ needs.prepare-tag.outputs.is-release == 'true' && format('what-changed release {0}', needs.prepare-tag.outputs.tag) || format('what-changed nightly build - {0}', github.sha) }}
+            ${{ needs.prepare-tag.outputs.is-release == 'true' && format('what-changed release {0}', needs.prepare-tag.outputs.tag) || format('what-changed pre-release build - {0}', github.sha) }}
 
-            ${{ needs.prepare-tag.outputs.is-release != 'true' && '⚠️ **This is a nightly build and may be unstable**' || '' }}
+            ${{ needs.prepare-tag.outputs.is-release != 'true' && '⚠️ **This is a pre-release build and may be unstable**' || '' }}
 
             ## Download
             - **Linux**: `what-changed-linux-x64.tar.gz`
