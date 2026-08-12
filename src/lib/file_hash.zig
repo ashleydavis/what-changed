@@ -51,10 +51,10 @@ pub const FileHashCache = std.StringArrayHashMapUnmanaged(FileHashEntry);
 // Returns the SHA-256 hex digest of one file's content, reading the file only when the cached entry
 // no longer matches the file's modification time and size.
 //
-pub fn hashFile(allocator: std.mem.Allocator, root_dir: []const u8, relative_path: []const u8, cache: *FileHashCache) std.mem.Allocator.Error![]const u8 {
+pub fn hashFile(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, relative_path: []const u8, cache: *FileHashCache) std.mem.Allocator.Error![]const u8 {
     const full_path = try files.joinPath(allocator, &.{ root_dir, relative_path });
 
-    const stat = files.statFile(full_path) catch {
+    const stat = files.statFile(io, full_path) catch {
         //
         // Anything that stops the file being looked at is treated as the file not being there. The
         // TypeScript only catches ENOENT and rethrows the rest, but every one of these means the
@@ -70,7 +70,7 @@ pub fn hashFile(allocator: std.mem.Allocator, root_dir: []const u8, relative_pat
         }
     }
 
-    const hash = hashFileContent(allocator, full_path) catch return MISSING_FILE_HASH;
+    const hash = hashFileContent(io, allocator, full_path) catch return MISSING_FILE_HASH;
 
     //
     // The key is copied because the cache outlives the file list it came from when the caller reuses
@@ -87,9 +87,9 @@ pub fn hashFile(allocator: std.mem.Allocator, root_dir: []const u8, relative_pat
 //
 // Reads a file and returns the SHA-256 hex digest of its content.
 //
-pub fn hashFileContent(allocator: std.mem.Allocator, full_path: []const u8) ![]const u8 {
-    const file = try files.openFile(full_path);
-    defer files.closeFile(file);
+pub fn hashFileContent(io: std.Io, allocator: std.mem.Allocator, full_path: []const u8) ![]const u8 {
+    const file = try files.openFile(io, full_path);
+    defer files.closeFile(io, file);
 
     var digest = Sha256.init(.{});
 
@@ -99,7 +99,7 @@ pub fn hashFileContent(allocator: std.mem.Allocator, full_path: []const u8) ![]c
     //
     var reader_buffer: [READ_BUFFER_BYTES]u8 = undefined;
     var chunk: [READ_BUFFER_BYTES]u8 = undefined;
-    var reader = files.fileReader(file, &reader_buffer);
+    var reader = files.fileReader(io, file, &reader_buffer);
     while (true) {
         const read = reader.interface.readSliceShort(&chunk) catch break;
         if (read == 0) break;
@@ -119,12 +119,12 @@ pub fn hashFileContent(allocator: std.mem.Allocator, full_path: []const u8) ![]c
 // steady state this is one stat per file, so there is no throughput to win and no file-descriptor
 // ceiling to reason about.
 //
-pub fn hashFiles(allocator: std.mem.Allocator, root_dir: []const u8, relative_paths: []const []const u8, cache: *FileHashCache) std.mem.Allocator.Error!FileHashes {
+pub fn hashFiles(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, relative_paths: []const []const u8, cache: *FileHashCache) std.mem.Allocator.Error!FileHashes {
     var hashes: FileHashes = .empty;
     try hashes.ensureTotalCapacity(allocator, relative_paths.len);
 
     for (relative_paths) |relative_path| {
-        try hashes.put(allocator, relative_path, try hashFile(allocator, root_dir, relative_path, cache));
+        try hashes.put(allocator, relative_path, try hashFile(io, allocator, root_dir, relative_path, cache));
     }
 
     return hashes;
@@ -200,29 +200,37 @@ const testing = std.testing;
 const HELLO_LINE_SHA256 = "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03";
 
 test "hashFile hashes a file's content" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("src/a.ts", "hello\n");
 
     var cache: FileHashCache = .empty;
-    try testing.expectEqualStrings(HELLO_LINE_SHA256, try hashFile(allocator, temporary.path, "src/a.ts", &cache));
+    try testing.expectEqualStrings(HELLO_LINE_SHA256, try hashFile(io, allocator, temporary.path, "src/a.ts", &cache));
 }
 
 test "hashFile records what it hashed in the cache" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("a.ts", "hello\n");
 
     var cache: FileHashCache = .empty;
-    _ = try hashFile(allocator, temporary.path, "a.ts", &cache);
+    _ = try hashFile(io, allocator, temporary.path, "a.ts", &cache);
 
     const entry = cache.get("a.ts").?;
     try testing.expectEqualStrings(HELLO_LINE_SHA256, entry.hash);
@@ -231,94 +239,118 @@ test "hashFile records what it hashed in the cache" {
 }
 
 test "hashFile answers from the cache when the file has not moved" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("a.ts", "hello\n");
 
     var cache: FileHashCache = .empty;
-    _ = try hashFile(allocator, temporary.path, "a.ts", &cache);
+    _ = try hashFile(io, allocator, temporary.path, "a.ts", &cache);
 
     //
     // The cached hash is replaced with a value the file's content could never produce. Getting it
     // back proves the file was not read, which is what makes a warm run fast.
     //
-    const stat = try files.statFile(try temporary.join(allocator, "a.ts"));
+    const stat = try files.statFile(io, try temporary.join(allocator, "a.ts"));
     try cache.put(allocator, "a.ts", .{ .mtime_ms = stat.mtime_ms, .size = stat.size, .hash = "from-the-cache" });
 
-    try testing.expectEqualStrings("from-the-cache", try hashFile(allocator, temporary.path, "a.ts", &cache));
+    try testing.expectEqualStrings("from-the-cache", try hashFile(io, allocator, temporary.path, "a.ts", &cache));
 }
 
 test "hashFile reads the file again when the size no longer matches" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("a.ts", "hello\n");
 
-    const stat = try files.statFile(try temporary.join(allocator, "a.ts"));
+    const stat = try files.statFile(io, try temporary.join(allocator, "a.ts"));
     var cache: FileHashCache = .empty;
     try cache.put(allocator, "a.ts", .{ .mtime_ms = stat.mtime_ms, .size = stat.size + 1, .hash = "stale" });
 
-    try testing.expectEqualStrings(HELLO_LINE_SHA256, try hashFile(allocator, temporary.path, "a.ts", &cache));
+    try testing.expectEqualStrings(HELLO_LINE_SHA256, try hashFile(io, allocator, temporary.path, "a.ts", &cache));
 }
 
 test "hashFile reads the file again when the modification time no longer matches" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("a.ts", "hello\n");
 
-    const stat = try files.statFile(try temporary.join(allocator, "a.ts"));
+    const stat = try files.statFile(io, try temporary.join(allocator, "a.ts"));
     var cache: FileHashCache = .empty;
     try cache.put(allocator, "a.ts", .{ .mtime_ms = stat.mtime_ms - 1000, .size = stat.size, .hash = "stale" });
 
-    try testing.expectEqualStrings(HELLO_LINE_SHA256, try hashFile(allocator, temporary.path, "a.ts", &cache));
+    try testing.expectEqualStrings(HELLO_LINE_SHA256, try hashFile(io, allocator, temporary.path, "a.ts", &cache));
 }
 
 test "hashFile reports a file that is not there as missing" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     var cache: FileHashCache = .empty;
-    try testing.expectEqualStrings(MISSING_FILE_HASH, try hashFile(allocator, temporary.path, "gone.ts", &cache));
+    try testing.expectEqualStrings(MISSING_FILE_HASH, try hashFile(io, allocator, temporary.path, "gone.ts", &cache));
     try testing.expect(cache.get("gone.ts") == null);
 }
 
 test "hashFile gives different content different hashes" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("a.ts", "one");
     try temporary.write("b.ts", "two");
 
     var cache: FileHashCache = .empty;
-    const first = try hashFile(allocator, temporary.path, "a.ts", &cache);
-    const second = try hashFile(allocator, temporary.path, "b.ts", &cache);
+    const first = try hashFile(io, allocator, temporary.path, "a.ts", &cache);
+    const second = try hashFile(io, allocator, temporary.path, "b.ts", &cache);
     try testing.expect(!std.mem.eql(u8, first, second));
 }
 
 test "hashFile hashes a file larger than one read buffer" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     const big = try allocator.alloc(u8, READ_BUFFER_BYTES * 2 + 17);
@@ -326,7 +358,7 @@ test "hashFile hashes a file larger than one read buffer" {
     try temporary.write("big.bin", big);
 
     var cache: FileHashCache = .empty;
-    const hash = try hashFile(allocator, temporary.path, "big.bin", &cache);
+    const hash = try hashFile(io, allocator, temporary.path, "big.bin", &cache);
 
     //
     // Hashed in one go for comparison, so the streaming read is checked against a single-shot
@@ -338,17 +370,21 @@ test "hashFile hashes a file larger than one read buffer" {
 }
 
 test "hashFiles hashes every path and keeps them in the order given" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("b.ts", "two");
     try temporary.write("a.ts", "one");
 
     var cache: FileHashCache = .empty;
-    var hashes = try hashFiles(allocator, temporary.path, &.{ "b.ts", "a.ts" }, &cache);
+    var hashes = try hashFiles(io, allocator, temporary.path, &.{ "b.ts", "a.ts" }, &cache);
 
     try testing.expectEqual(@as(usize, 2), hashes.count());
     try testing.expectEqualStrings("b.ts", hashes.keys()[0]);
@@ -357,28 +393,36 @@ test "hashFiles hashes every path and keeps them in the order given" {
 }
 
 test "hashFiles includes a missing file as missing rather than leaving it out" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("here.ts", "x");
 
     var cache: FileHashCache = .empty;
-    var hashes = try hashFiles(allocator, temporary.path, &.{ "here.ts", "gone.ts" }, &cache);
+    var hashes = try hashFiles(io, allocator, temporary.path, &.{ "here.ts", "gone.ts" }, &cache);
 
     try testing.expectEqual(@as(usize, 2), hashes.count());
     try testing.expectEqualStrings(MISSING_FILE_HASH, hashes.get("gone.ts").?);
 }
 
 test "hashFiles with nothing to hash gives nothing" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     var cache: FileHashCache = .empty;
-    var hashes = try hashFiles(allocator, "/nowhere", &.{}, &cache);
+    var hashes = try hashFiles(io, allocator, "/nowhere", &.{}, &cache);
     try testing.expectEqual(@as(usize, 0), hashes.count());
 }
 
@@ -460,16 +504,20 @@ test "cacheFromValue of anything that is not an object is empty" {
 }
 
 test "a cache survives a round trip through a value, mtime and all" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("a.ts", "hello\n");
 
     var cache: FileHashCache = .empty;
-    _ = try hashFile(allocator, temporary.path, "a.ts", &cache);
+    _ = try hashFile(io, allocator, temporary.path, "a.ts", &cache);
 
     var round_tripped = try cacheFromValue(allocator, try cacheToValue(allocator, &cache));
 
@@ -490,15 +538,19 @@ test "a cache survives a round trip through a value, mtime and all" {
         .size = reloaded.size,
         .hash = "from-a-round-trip",
     });
-    try testing.expectEqualStrings("from-a-round-trip", try hashFile(allocator, temporary.path, "a.ts", &round_tripped));
+    try testing.expectEqualStrings("from-a-round-trip", try hashFile(io, allocator, temporary.path, "a.ts", &round_tripped));
 }
 
 test "hashFileContent digests a file, whatever the cache says" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("a.ts", "hello\n");
 
@@ -506,15 +558,19 @@ test "hashFileContent digests a file, whatever the cache says" {
     // Unlike hashFile, this always reads. It is the half that does the work, and it is checked here
     // against a digest computed elsewhere rather than only against itself.
     //
-    try testing.expectEqualStrings(HELLO_LINE_SHA256, try hashFileContent(allocator, try temporary.join(allocator, "a.ts")));
+    try testing.expectEqualStrings(HELLO_LINE_SHA256, try hashFileContent(io, allocator, try temporary.join(allocator, "a.ts")));
 }
 
 test "hashFileContent digests an empty file" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("empty.ts", "");
 
@@ -523,20 +579,24 @@ test "hashFileContent digests an empty file" {
     //
     try testing.expectEqualStrings(
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        try hashFileContent(allocator, try temporary.join(allocator, "empty.ts")),
+        try hashFileContent(io, allocator, try temporary.join(allocator, "empty.ts")),
     );
 }
 
 test "hashFileContent reports a file that is not there rather than returning a digest" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     //
     // hashFile turns this into MISSING_FILE_HASH; this one is the raw operation and says so.
     //
-    try testing.expectError(error.FileNotFound, hashFileContent(allocator, try temporary.join(allocator, "gone.ts")));
+    try testing.expectError(error.FileNotFound, hashFileContent(io, allocator, try temporary.join(allocator, "gone.ts")));
 }

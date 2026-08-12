@@ -33,17 +33,17 @@ pub const Cache = struct {
 // parse or is not a plain object all yield empty structures rather than an error: a damaged cache
 // should cost a slow run, never a blocked one.
 //
-pub fn loadCache(allocator: std.mem.Allocator, cache_dir: []const u8) std.mem.Allocator.Error!Cache {
+pub fn loadCache(io: std.Io, allocator: std.mem.Allocator, cache_dir: []const u8) std.mem.Allocator.Error!Cache {
     const path = try files.joinPath(allocator, &.{ cache_dir, FILE_HASHES_NAME });
-    return .{ .file_hashes = try file_hash.cacheFromValue(allocator, try readJsonObject(allocator, path)) };
+    return .{ .file_hashes = try file_hash.cacheFromValue(allocator, try readJsonObject(io, allocator, path)) };
 }
 
 //
 // Reads a JSON object from a file, returning an empty object for anything that is not a readable,
 // parseable, plain JSON object.
 //
-pub fn readJsonObject(allocator: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error!Value {
-    const text = files.readFile(allocator, path) catch {
+pub fn readJsonObject(io: std.Io, allocator: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error!Value {
+    const text = files.readFile(io, allocator, path) catch {
         return .{ .object = value.newObject(allocator) };
     };
 
@@ -60,9 +60,9 @@ pub fn readJsonObject(allocator: std.mem.Allocator, path: []const u8) std.mem.Al
 //
 // Writes the per-file hashes, creating the cache directory if it is not there yet.
 //
-pub fn saveFileHashes(allocator: std.mem.Allocator, cache_dir: []const u8, hashes: *const FileHashCache) !void {
+pub fn saveFileHashes(io: std.Io, allocator: std.mem.Allocator, cache_dir: []const u8, hashes: *const FileHashCache) !void {
     const path = try files.joinPath(allocator, &.{ cache_dir, FILE_HASHES_NAME });
-    try writeJsonFile(allocator, path, try file_hash.cacheToValue(allocator, hashes));
+    try writeJsonFile(io, allocator, path, try file_hash.cacheToValue(allocator, hashes));
 }
 
 //
@@ -75,14 +75,14 @@ pub fn saveFileHashes(allocator: std.mem.Allocator, cache_dir: []const u8, hashe
 // fought over it, and the second to rename found the first had already moved it away and failed with
 // ENOENT. A name per writer means each renames its own file and the last one wins.
 //
-pub fn writeJsonFile(allocator: std.mem.Allocator, path: []const u8, contents: Value) !void {
-    try files.makeParentDir(path);
+pub fn writeJsonFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, contents: Value) !void {
+    try files.makeParentDir(io, path);
 
-    const temporary_path = try std.fmt.allocPrint(allocator, "{s}.{s}.tmp", .{ path, try randomName(allocator) });
-    errdefer files.removeFile(temporary_path);
+    const temporary_path = try std.fmt.allocPrint(allocator, "{s}.{s}.tmp", .{ path, try randomName(io, allocator) });
+    errdefer files.removeFile(io, temporary_path);
 
-    try files.writeFile(temporary_path, try json.stringify(allocator, contents));
-    try files.renameFile(temporary_path, path);
+    try files.writeFile(io, temporary_path, try json.stringify(allocator, contents));
+    try files.renameFile(io, temporary_path, path);
 }
 
 //
@@ -91,9 +91,9 @@ pub fn writeJsonFile(allocator: std.mem.Allocator, path: []const u8, contents: V
 // The TypeScript uses randomUUID. This uses the same amount of randomness from the same kind of
 // source; the exact spelling does not matter, because nothing ever reads these names back.
 //
-pub fn randomName(allocator: std.mem.Allocator) std.mem.Allocator.Error![]const u8 {
+pub fn randomName(io: std.Io, allocator: std.mem.Allocator) std.mem.Allocator.Error![]const u8 {
     var raw: [16]u8 = undefined;
-    files.io().random(&raw);
+    io.random(&raw);
 
     const hex = try allocator.alloc(u8, raw.len * 2);
     @memcpy(hex, &std.fmt.bytesToHex(raw, .lower));
@@ -122,18 +122,18 @@ pub const LOCK_STALE_MS = 60000;
 // create it and fails every other with "already exists", so there is no window in which two writers
 // both believe they have it.
 //
-pub fn takeUpdateLock(lock_path: []const u8) !void {
+pub fn takeUpdateLock(io: std.Io, lock_path: []const u8) !void {
     var attempt: usize = 0;
     while (attempt < LOCK_ATTEMPTS) : (attempt += 1) {
-        if (files.createFileExclusive(lock_path)) {
+        if (files.createFileExclusive(io, lock_path)) {
             return;
         } else |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,
         }
 
-        clearAbandonedLock(lock_path);
-        files.sleepMs(LOCK_RETRY_MS);
+        clearAbandonedLock(io, lock_path);
+        files.sleepMs(io, LOCK_RETRY_MS);
     }
 
     return error.LockTimeout;
@@ -143,20 +143,20 @@ pub fn takeUpdateLock(lock_path: []const u8) !void {
 // Removes a lock file old enough that whoever made it cannot still be working, so one killed process
 // does not block every later one for good.
 //
-pub fn clearAbandonedLock(lock_path: []const u8) void {
-    const stat = files.statFile(lock_path) catch return; // Already gone, which is what is wanted.
+pub fn clearAbandonedLock(io: std.Io, lock_path: []const u8) void {
+    const stat = files.statFile(io, lock_path) catch return; // Already gone, which is what is wanted.
 
-    const now_ms = files.nowMs();
+    const now_ms = files.nowMs(io);
     if (now_ms - stat.mtime_ms > LOCK_STALE_MS) {
-        files.removeFile(lock_path);
+        files.removeFile(io, lock_path);
     }
 }
 
 //
 // Releases the lock beside a file.
 //
-pub fn releaseUpdateLock(lock_path: []const u8) void {
-    files.removeFile(lock_path);
+pub fn releaseUpdateLock(io: std.Io, lock_path: []const u8) void {
+    files.removeFile(io, lock_path);
 }
 
 //
@@ -169,18 +169,19 @@ pub fn releaseUpdateLock(lock_path: []const u8) void {
 // only sign is work that quietly has to be redone later.
 //
 pub fn updateJsonFile(
+    io: std.Io,
     allocator: std.mem.Allocator,
     path: []const u8,
     context: anytype,
     comptime mutate: fn (@TypeOf(context), std.mem.Allocator, Value) std.mem.Allocator.Error!Value,
     fail: *failure.Failure,
 ) failure.Error!void {
-    files.makeParentDir(path) catch |err| {
+    files.makeParentDir(io, path) catch |err| {
         return fail.set("Failed to create the directory for \"{s}\": {s}", .{ path, files.describeError(err) });
     };
 
     const lock_path = try std.fmt.allocPrint(allocator, "{s}.lock", .{path});
-    takeUpdateLock(lock_path) catch |err| switch (err) {
+    takeUpdateLock(io, lock_path) catch |err| switch (err) {
         error.LockTimeout => return fail.set(
             "Gave up waiting for the update lock at \"{s}\" after {d}s. Delete it if no other run is going.",
             .{ lock_path, (LOCK_ATTEMPTS * LOCK_RETRY_MS) / 1000 },
@@ -192,10 +193,10 @@ pub fn updateJsonFile(
     // Released however this leaves, so a write that fails does not strand the lock and make every
     // later writer wait out the abandonment timeout.
     //
-    defer releaseUpdateLock(lock_path);
+    defer releaseUpdateLock(io, lock_path);
 
-    const current = try readJsonObject(allocator, path);
-    writeJsonFile(allocator, path, try mutate(context, allocator, current)) catch |err| {
+    const current = try readJsonObject(io, allocator, path);
+    writeJsonFile(io, allocator, path, try mutate(context, allocator, current)) catch |err| {
         return fail.set("Failed to write \"{s}\": {s}", .{ path, files.describeError(err) });
     };
 }
@@ -207,9 +208,9 @@ pub fn updateJsonFile(
 // treats empty and absent the same way, and a write cannot go wrong the way a delete of a computed
 // path can: if the path were ever empty or wrong, a delete would take something real with it.
 //
-pub fn cacheReset(allocator: std.mem.Allocator, cache_dir: []const u8) !void {
+pub fn cacheReset(io: std.Io, allocator: std.mem.Allocator, cache_dir: []const u8) !void {
     const empty: FileHashCache = .empty;
-    try saveFileHashes(allocator, cache_dir, &empty);
+    try saveFileHashes(io, allocator, cache_dir, &empty);
 }
 
 //
@@ -256,90 +257,110 @@ fn addField(name: []const u8, allocator: std.mem.Allocator, current: Value) std.
 }
 
 test "readJsonObject reads an object off disk" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("data.json", "{\"a\": 1}");
 
-    const parsed = try readJsonObject(allocator, try temporary.join(allocator, "data.json"));
+    const parsed = try readJsonObject(io, allocator, try temporary.join(allocator, "data.json"));
     try testing.expectEqual(@as(i64, 1), value.get(parsed, "a").?.integer);
 }
 
 test "readJsonObject treats a missing, damaged or wrongly typed file as empty" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("broken.json", "{ not json");
     try temporary.write("array.json", "[1, 2]");
     try temporary.write("scalar.json", "42");
 
-    try testing.expectEqual(@as(usize, 0), (try readJsonObject(allocator, try temporary.join(allocator, "gone.json"))).object.count());
-    try testing.expectEqual(@as(usize, 0), (try readJsonObject(allocator, try temporary.join(allocator, "broken.json"))).object.count());
-    try testing.expectEqual(@as(usize, 0), (try readJsonObject(allocator, try temporary.join(allocator, "array.json"))).object.count());
-    try testing.expectEqual(@as(usize, 0), (try readJsonObject(allocator, try temporary.join(allocator, "scalar.json"))).object.count());
+    try testing.expectEqual(@as(usize, 0), (try readJsonObject(io, allocator, try temporary.join(allocator, "gone.json"))).object.count());
+    try testing.expectEqual(@as(usize, 0), (try readJsonObject(io, allocator, try temporary.join(allocator, "broken.json"))).object.count());
+    try testing.expectEqual(@as(usize, 0), (try readJsonObject(io, allocator, try temporary.join(allocator, "array.json"))).object.count());
+    try testing.expectEqual(@as(usize, 0), (try readJsonObject(io, allocator, try temporary.join(allocator, "scalar.json"))).object.count());
 }
 
 test "loadCache reads the hashes back, and an absent cache is empty" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     const cache_dir = try temporary.join(allocator, "cache");
 
-    var empty = try loadCache(allocator, cache_dir);
+    var empty = try loadCache(io, allocator, cache_dir);
     try testing.expectEqual(@as(usize, 0), empty.file_hashes.count());
 
     var hashes: FileHashCache = .empty;
     try hashes.put(allocator, "a.ts", .{ .mtime_ms = 1.5, .size = 3, .hash = "hash-a" });
-    try saveFileHashes(allocator, cache_dir, &hashes);
+    try saveFileHashes(io, allocator, cache_dir, &hashes);
 
-    var loaded = try loadCache(allocator, cache_dir);
+    var loaded = try loadCache(io, allocator, cache_dir);
     try testing.expectEqual(@as(usize, 1), loaded.file_hashes.count());
     try testing.expectEqualStrings("hash-a", loaded.file_hashes.get("a.ts").?.hash);
     try testing.expectEqual(@as(f64, 1.5), loaded.file_hashes.get("a.ts").?.mtime_ms);
 }
 
 test "saveFileHashes creates the cache directory when it is not there" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     var hashes: FileHashCache = .empty;
     try hashes.put(allocator, "a.ts", .{ .mtime_ms = 1, .size = 1, .hash = "h" });
-    try saveFileHashes(allocator, try temporary.join(allocator, "deep/nested/cache"), &hashes);
+    try saveFileHashes(io, allocator, try temporary.join(allocator, "deep/nested/cache"), &hashes);
 
     try testing.expect(temporary.has("deep/nested/cache/" ++ FILE_HASHES_NAME));
 }
 
 test "writeJsonFile leaves no temporary file behind" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     var object = value.newObject(allocator);
     try object.put(allocator, "a", value.int(1));
-    try writeJsonFile(allocator, try temporary.join(allocator, "out.json"), .{ .object = object });
+    try writeJsonFile(io, allocator, try temporary.join(allocator, "out.json"), .{ .object = object });
 
-    var directory = try std.Io.Dir.cwd().openDir(files.io(), temporary.path, .{ .iterate = true });
-    defer directory.close(files.io());
+    var directory = try std.Io.Dir.cwd().openDir(io, temporary.path, .{ .iterate = true });
+    defer directory.close(io);
 
     var walker = directory.iterate();
     var count: usize = 0;
-    while (try walker.next(files.io())) |entry| {
+    while (try walker.next(io)) |entry| {
         count += 1;
         try testing.expectEqualStrings("out.json", entry.name);
     }
@@ -347,17 +368,21 @@ test "writeJsonFile leaves no temporary file behind" {
 }
 
 test "writeJsonFile writes what JSON.stringify with two spaces would" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     var object = value.newObject(allocator);
     try object.put(allocator, "targets", .{ .object = value.newObject(allocator) });
     try object.put(allocator, "files", .{ .object = value.newObject(allocator) });
-    try writeJsonFile(allocator, try temporary.join(allocator, "baseline.json"), .{ .object = object });
+    try writeJsonFile(io, allocator, try temporary.join(allocator, "baseline.json"), .{ .object = object });
 
     try testing.expectEqualStrings(
         \\{
@@ -368,74 +393,94 @@ test "writeJsonFile writes what JSON.stringify with two spaces would" {
 }
 
 test "randomName gives a different name every time" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const first = try randomName(allocator);
-    const second = try randomName(allocator);
+    const first = try randomName(io, allocator);
+    const second = try randomName(io, allocator);
     try testing.expectEqual(@as(usize, 32), first.len);
     try testing.expect(!std.mem.eql(u8, first, second));
 }
 
 test "takeUpdateLock takes a free lock and refuses a held one" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     const lock_path = try temporary.join(allocator, "thing.json.lock");
 
-    try takeUpdateLock(lock_path);
-    try testing.expect(files.fileExists(lock_path));
+    try takeUpdateLock(io, lock_path);
+    try testing.expect(files.fileExists(io, lock_path));
 
-    releaseUpdateLock(lock_path);
-    try testing.expect(!files.fileExists(lock_path));
+    releaseUpdateLock(io, lock_path);
+    try testing.expect(!files.fileExists(io, lock_path));
 
     //
     // And it can be taken again once released, which is what makes the whole thing usable more than
     // once in a process's lifetime.
     //
-    try takeUpdateLock(lock_path);
-    releaseUpdateLock(lock_path);
+    try takeUpdateLock(io, lock_path);
+    releaseUpdateLock(io, lock_path);
 }
 
 test "clearAbandonedLock leaves a fresh lock alone" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     const lock_path = try temporary.join(allocator, "fresh.lock");
 
-    try takeUpdateLock(lock_path);
-    clearAbandonedLock(lock_path);
+    try takeUpdateLock(io, lock_path);
+    clearAbandonedLock(io, lock_path);
 
     //
     // A living writer must never be robbed of its lock, so a lock made a moment ago stays.
     //
-    try testing.expect(files.fileExists(lock_path));
-    releaseUpdateLock(lock_path);
+    try testing.expect(files.fileExists(io, lock_path));
+    releaseUpdateLock(io, lock_path);
 }
 
 test "clearAbandonedLock does not mind a lock that is already gone" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
-    clearAbandonedLock(try temporary.join(allocator, "never-existed.lock"));
+    clearAbandonedLock(io, try temporary.join(allocator, "never-existed.lock"));
 }
 
 test "updateJsonFile writes the result of the change" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     const path = try temporary.join(allocator, "nested/data.json");
 
@@ -443,66 +488,78 @@ test "updateJsonFile writes the result of the change" {
     try replacement.put(allocator, "written", value.boolean(true));
 
     var fail = failure.Failure.init(allocator);
-    try updateJsonFile(allocator, path, Value{ .object = replacement }, replaceWith, &fail);
+    try updateJsonFile(io, allocator, path, Value{ .object = replacement }, replaceWith, &fail);
 
-    const read_back = try readJsonObject(allocator, path);
+    const read_back = try readJsonObject(io, allocator, path);
     try testing.expectEqual(true, value.get(read_back, "written").?.bool);
 }
 
 test "updateJsonFile hands the current contents to the change" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     const path = try temporary.join(allocator, "data.json");
 
     var fail = failure.Failure.init(allocator);
-    try updateJsonFile(allocator, path, @as([]const u8, "first"), addField, &fail);
-    try updateJsonFile(allocator, path, @as([]const u8, "second"), addField, &fail);
+    try updateJsonFile(io, allocator, path, @as([]const u8, "first"), addField, &fail);
+    try updateJsonFile(io, allocator, path, @as([]const u8, "second"), addField, &fail);
 
     //
     // Both fields are there, which is the whole point: the second update read what the first wrote
     // rather than starting from nothing.
     //
-    const read_back = try readJsonObject(allocator, path);
+    const read_back = try readJsonObject(io, allocator, path);
     try testing.expectEqual(true, value.get(read_back, "first").?.bool);
     try testing.expectEqual(true, value.get(read_back, "second").?.bool);
 }
 
 test "updateJsonFile releases the lock when it is done" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     const path = try temporary.join(allocator, "data.json");
 
     var fail = failure.Failure.init(allocator);
-    try updateJsonFile(allocator, path, @as([]const u8, "a"), addField, &fail);
+    try updateJsonFile(io, allocator, path, @as([]const u8, "a"), addField, &fail);
 
-    try testing.expect(!files.fileExists(try std.fmt.allocPrint(allocator, "{s}.lock", .{path})));
+    try testing.expect(!files.fileExists(io, try std.fmt.allocPrint(allocator, "{s}.lock", .{path})));
 }
 
 test "cacheReset writes an empty cache rather than deleting the file" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     const cache_dir = try temporary.join(allocator, "cache");
 
     var hashes: FileHashCache = .empty;
     try hashes.put(allocator, "a.ts", .{ .mtime_ms = 1, .size = 1, .hash = "h" });
-    try saveFileHashes(allocator, cache_dir, &hashes);
+    try saveFileHashes(io, allocator, cache_dir, &hashes);
 
-    try cacheReset(allocator, cache_dir);
+    try cacheReset(io, allocator, cache_dir);
 
     try testing.expect(temporary.has("cache/" ++ FILE_HASHES_NAME));
-    var loaded = try loadCache(allocator, cache_dir);
+    var loaded = try loadCache(io, allocator, cache_dir);
     try testing.expectEqual(@as(usize, 0), loaded.file_hashes.count());
 }
 

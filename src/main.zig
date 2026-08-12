@@ -94,12 +94,6 @@ pub fn main(init: std.process.Init) u8 {
     //
     const allocator = init.arena.allocator();
 
-    //
-    // Every filesystem call in this project goes through the one the runtime provided, rather than
-    // each part of the tool creating its own.
-    //
-    wc.files.setIo(init.io);
-
     var stdout_buffer: [STDOUT_BUFFER_BYTES]u8 = undefined;
     var stdout_file = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     var out = Output{ .writer = &stdout_file.interface };
@@ -173,6 +167,11 @@ fn run(init: std.process.Init, allocator: std.mem.Allocator, out: *Output, fail:
     const context = try allocator.create(Context);
     context.* = .{
         .allocator = allocator,
+        //
+        // The one the runtime handed the process, so every filesystem call the run makes goes
+        // through a single implementation rather than one each part stood up for itself.
+        //
+        .io = init.io,
         .cwd = cwd,
         .list_files = wc.list_files.listRepoFiles,
         .platform = platformName(),

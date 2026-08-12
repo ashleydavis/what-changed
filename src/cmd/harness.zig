@@ -26,7 +26,8 @@ var file_list: []const []const u8 = &.{};
 //
 // Answers with whatever the scenario last wrote, in place of asking git.
 //
-fn listFromScenario(allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) wc.failure.Error![][]const u8 {
+fn listFromScenario(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) wc.failure.Error![][]const u8 {
+    _ = io;
     _ = root_dir;
     _ = fail;
     return allocator.dupe([]const u8, file_list);
@@ -37,6 +38,7 @@ fn listFromScenario(allocator: std.mem.Allocator, root_dir: []const u8, fail: *F
 //
 pub const Scenario = struct {
     arena: std.heap.ArenaAllocator,
+    test_io: wc.files.TestIo,
     temporary: wc.files.TemporaryDir,
     captured: std.Io.Writer.Allocating,
     out: Output,
@@ -49,11 +51,13 @@ pub const Scenario = struct {
         const scenario = try std.testing.allocator.create(Scenario);
         scenario.* = .{
             .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
-            .temporary = try wc.files.TemporaryDir.create(),
+            .test_io = .init(),
+            .temporary = undefined,
             .captured = undefined,
             .out = undefined,
             .fail = undefined,
         };
+        scenario.temporary = try wc.files.TemporaryDir.create(scenario.test_io.io());
         scenario.captured = std.Io.Writer.Allocating.init(scenario.arena.allocator());
         scenario.out = .{ .writer = &scenario.captured.writer };
         scenario.fail = Failure.init(scenario.arena.allocator());
@@ -66,6 +70,7 @@ pub const Scenario = struct {
     //
     pub fn destroy(self: *Scenario) void {
         self.temporary.destroy();
+        self.test_io.deinit();
         self.arena.deinit();
         std.testing.allocator.destroy(self);
     }
@@ -75,6 +80,13 @@ pub const Scenario = struct {
     //
     pub fn allocator(self: *Scenario) std.mem.Allocator {
         return self.arena.allocator();
+    }
+
+    //
+    // The `Io` everything this scenario does goes through, which is its own and no other test's.
+    //
+    pub fn io(self: *Scenario) std.Io {
+        return self.test_io.io();
     }
 
     //
@@ -112,6 +124,7 @@ pub const Scenario = struct {
     pub fn contextOn(self: *Scenario, platform: []const u8) Context {
         return .{
             .allocator = self.allocator(),
+            .io = self.io(),
             .cwd = self.temporary.path,
             .list_files = listFromScenario,
             .platform = platform,
@@ -155,7 +168,7 @@ test "project writes the config and the files, and the lister reports them" {
     try testing.expect(scenario.temporary.has("src/a.ts"));
 
     var fail = Failure.init(scenario.allocator());
-    const listed = try listFromScenario(scenario.allocator(), scenario.temporary.path, &fail);
+    const listed = try listFromScenario(scenario.io(), scenario.allocator(), scenario.temporary.path, &fail);
     try testing.expectEqual(@as(usize, 2), listed.len);
     try testing.expectEqualStrings("src/a.ts", listed[0]);
 }

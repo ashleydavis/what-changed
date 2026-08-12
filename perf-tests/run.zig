@@ -68,15 +68,15 @@ var out: wc.output.Output = undefined;
 // system clock being adjusted. Measuring against the wall clock would report a negative duration
 // the moment NTP nudged it mid-run.
 //
-fn start() i96 {
-    return std.Io.Clock.Timestamp.now(wc.files.io(), .awake).raw.nanoseconds;
+fn start(io: std.Io) i96 {
+    return std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
 }
 
 //
 // Finishes a measurement, in milliseconds.
 //
-fn elapsedMs(from: i96) f64 {
-    const now = std.Io.Clock.Timestamp.now(wc.files.io(), .awake).raw.nanoseconds;
+fn elapsedMs(io: std.Io, from: i96) f64 {
+    const now = std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
     return @as(f64, @floatFromInt(now - from)) / std.time.ns_per_ms;
 }
 
@@ -92,7 +92,7 @@ fn record(allocator: std.mem.Allocator, name: []const u8, file_count: usize, mil
 // Writes a tree of files spread across directories, laid out like a real project rather than one
 // flat directory, and returns their relative paths.
 //
-fn buildFileTree(allocator: std.mem.Allocator, root_dir: []const u8, file_count: usize) ![][]const u8 {
+fn buildFileTree(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, file_count: usize) ![][]const u8 {
     const files_per_directory = 50;
     const directory_count = (file_count + files_per_directory - 1) / files_per_directory;
 
@@ -103,7 +103,7 @@ fn buildFileTree(allocator: std.mem.Allocator, root_dir: []const u8, file_count:
     var directory_index: usize = 0;
     while (directory_index < directory_count) : (directory_index += 1) {
         const directory = try std.fmt.allocPrint(allocator, "packages/package-{d}/src", .{directory_index});
-        try wc.files.makeDirPath(try wc.files.joinPath(allocator, &.{ root_dir, directory }));
+        try wc.files.makeDirPath(io, try wc.files.joinPath(allocator, &.{ root_dir, directory }));
 
         var file_index: usize = 0;
         while (file_index < files_per_directory and relative_paths.items.len < file_count) : (file_index += 1) {
@@ -114,7 +114,7 @@ fn buildFileTree(allocator: std.mem.Allocator, root_dir: []const u8, file_count:
             // as much to do as it would on a real tree.
             //
             const body = try std.mem.concat(allocator, u8, &.{ content, relative_path });
-            try wc.files.writeFile(try wc.files.joinPath(allocator, &.{ root_dir, relative_path }), body);
+            try wc.files.writeFile(io, try wc.files.joinPath(allocator, &.{ root_dir, relative_path }), body);
 
             try relative_paths.append(allocator, relative_path);
         }
@@ -127,22 +127,22 @@ fn buildFileTree(allocator: std.mem.Allocator, root_dir: []const u8, file_count:
 // Measures the stages that decide how long a check takes: hashing with a cold cache, hashing with a
 // warm one, building the hash tree, looking a watched path up in it, and the changed-file diff.
 //
-fn benchmarkSize(allocator: std.mem.Allocator, file_count: usize) !bool {
-    var temporary = try wc.files.TemporaryDir.create();
+fn benchmarkSize(io: std.Io, allocator: std.mem.Allocator, file_count: usize) !bool {
+    var temporary = try wc.files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     var within_budget = true;
 
-    const relative_paths = try buildFileTree(allocator, temporary.path, file_count);
+    const relative_paths = try buildFileTree(io, allocator, temporary.path, file_count);
 
     var cold_cache: wc.file_hash.FileHashCache = .empty;
-    var at = start();
-    _ = try wc.file_hash.hashFiles(allocator, temporary.path, relative_paths, &cold_cache);
-    try record(allocator, "hash (cold, reads every file)", file_count, elapsedMs(at));
+    var at = start(io);
+    _ = try wc.file_hash.hashFiles(io, allocator, temporary.path, relative_paths, &cold_cache);
+    try record(allocator, "hash (cold, reads every file)", file_count, elapsedMs(io, at));
 
-    at = start();
-    var hashes = try wc.file_hash.hashFiles(allocator, temporary.path, relative_paths, &cold_cache);
-    const warm_ms = elapsedMs(at);
+    at = start(io);
+    var hashes = try wc.file_hash.hashFiles(io, allocator, temporary.path, relative_paths, &cold_cache);
+    const warm_ms = elapsedMs(io, at);
     try record(allocator, "hash (warm, stat only)", file_count, warm_ms);
 
     const per_file_ms = warm_ms / @as(f64, @floatFromInt(file_count));
@@ -151,9 +151,9 @@ fn benchmarkSize(allocator: std.mem.Allocator, file_count: usize) !bool {
         within_budget = false;
     }
 
-    at = start();
+    at = start(io);
     const tree = try wc.merkle.buildTree(allocator, &hashes);
-    try record(allocator, "build hash tree", file_count, elapsedMs(at));
+    try record(allocator, "build hash tree", file_count, elapsedMs(io, at));
 
     //
     // One lookup per directory, which is what a config with many targets costs.
@@ -166,24 +166,24 @@ fn benchmarkSize(allocator: std.mem.Allocator, file_count: usize) !bool {
         try watched_paths.put(allocator, try std.fmt.allocPrint(allocator, "{s}/{s}", .{ first, second }), {});
     }
 
-    at = start();
+    at = start(io);
     for (watched_paths.keys()) |watched_path| {
         std.mem.doNotOptimizeAway(wc.merkle.hashForPath(tree, watched_path));
     }
-    try record(allocator, "lookup every watched path", file_count, elapsedMs(at));
+    try record(allocator, "lookup every watched path", file_count, elapsedMs(io, at));
 
     var baseline = try wc.changed_files.toFileHashes(allocator, &hashes);
 
-    at = start();
+    at = start(io);
     std.mem.doNotOptimizeAway(try wc.changed_files.diffFileHashes(allocator, &hashes, &baseline));
-    try record(allocator, "diff files (nothing changed)", file_count, elapsedMs(at));
+    try record(allocator, "diff files (nothing changed)", file_count, elapsedMs(io, at));
 
     var one_changed = try hashes.clone(allocator);
     try one_changed.put(allocator, relative_paths[0], "changed");
 
-    at = start();
+    at = start(io);
     std.mem.doNotOptimizeAway(try wc.changed_files.diffFileHashes(allocator, &one_changed, &baseline));
-    try record(allocator, "diff files (one changed)", file_count, elapsedMs(at));
+    try record(allocator, "diff files (one changed)", file_count, elapsedMs(io, at));
 
     return within_budget;
 }
@@ -268,11 +268,10 @@ fn printHeader() !void {
 // Runs every benchmark at every size and exits non-zero if any of them blew its budget.
 //
 pub fn main(init: std.process.Init) !u8 {
-    wc.files.setIo(init.io);
     const allocator = init.arena.allocator();
 
     var buffer: [64 * 1024]u8 = undefined;
-    var stdout_file = std.Io.File.stdout().writer(wc.files.io(), &buffer);
+    var stdout_file = std.Io.File.stdout().writer(init.io, &buffer);
     out = .{ .writer = &stdout_file.interface };
 
     out.line("what-changed performance benchmarks", .{});
@@ -282,7 +281,7 @@ pub fn main(init: std.process.Init) !u8 {
     var all_within_budget = true;
     for (TREE_SIZES) |file_count| {
         out.line("{d} files:", .{file_count});
-        const within_budget = try benchmarkSize(allocator, file_count);
+        const within_budget = try benchmarkSize(init.io, allocator, file_count);
         all_within_budget = all_within_budget and within_budget;
         out.blank();
     }
@@ -304,14 +303,17 @@ pub fn main(init: std.process.Init) !u8 {
 const testing = std.testing;
 
 test "buildFileTree writes the requested number of files, spread across directories" {
+    var test_io = wc.files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try wc.files.TemporaryDir.create();
+    var temporary = try wc.files.TemporaryDir.create(io);
     defer temporary.destroy();
 
-    const paths = try buildFileTree(allocator, temporary.path, 120);
+    const paths = try buildFileTree(io, allocator, temporary.path, 120);
 
     try testing.expectEqual(@as(usize, 120), paths.len);
     try testing.expectEqualStrings("packages/package-0/src/file-0.ts", paths[0]);
@@ -321,40 +323,50 @@ test "buildFileTree writes the requested number of files, spread across director
 }
 
 test "buildFileTree gives every file different content, so hashing has real work to do" {
+    var test_io = wc.files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try wc.files.TemporaryDir.create();
+    var temporary = try wc.files.TemporaryDir.create(io);
     defer temporary.destroy();
 
-    const paths = try buildFileTree(allocator, temporary.path, 3);
+    const paths = try buildFileTree(io, allocator, temporary.path, 3);
 
     var cache: wc.file_hash.FileHashCache = .empty;
-    var hashes = try wc.file_hash.hashFiles(allocator, temporary.path, paths, &cache);
+    var hashes = try wc.file_hash.hashFiles(io, allocator, temporary.path, paths, &cache);
 
     try testing.expect(!std.mem.eql(u8, hashes.get(paths[0]).?, hashes.get(paths[1]).?));
     try testing.expect(!std.mem.eql(u8, hashes.get(paths[1]).?, hashes.get(paths[2]).?));
 }
 
 test "buildFileTree writes files of the size the benchmark says it does" {
+    var test_io = wc.files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try wc.files.TemporaryDir.create();
+    var temporary = try wc.files.TemporaryDir.create(io);
     defer temporary.destroy();
 
-    const paths = try buildFileTree(allocator, temporary.path, 1);
-    const stat = try wc.files.statFile(try wc.files.joinPath(allocator, &.{ temporary.path, paths[0] }));
+    const paths = try buildFileTree(io, allocator, temporary.path, 1);
+    const stat = try wc.files.statFile(io, try wc.files.joinPath(allocator, &.{ temporary.path, paths[0] }));
 
     try testing.expectEqual(@as(u64, FILE_SIZE_BYTES + paths[0].len), stat.size);
 }
 
 test "elapsedMs measures forwards" {
-    const at = start();
-    wc.files.sleepMs(1);
-    try testing.expect(elapsedMs(at) >= 1.0);
+    var test_io = wc.files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
+    const at = start(io);
+    wc.files.sleepMs(io, 1);
+    try testing.expect(elapsedMs(io, at) >= 1.0);
 }
 
 test "measurementFor finds a recorded result and reports a missing one" {
@@ -390,6 +402,9 @@ test "stageNames lists each stage once, in the order first measured" {
 }
 
 test "benchmarkSize measures every stage and stays within budget" {
+    var test_io = wc.files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -402,7 +417,7 @@ test "benchmarkSize measures every stage and stays within budget" {
     var captured = std.Io.Writer.Allocating.init(allocator);
     out = .{ .writer = &captured.writer };
 
-    try testing.expect(try benchmarkSize(allocator, 60));
+    try testing.expect(try benchmarkSize(io, allocator, 60));
     try testing.expectEqual(@as(usize, 6), results.items.len);
 
     for (results.items) |result| {

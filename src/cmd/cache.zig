@@ -20,9 +20,9 @@ const ReportOptions = wc.run.ReportOptions;
 // Resolves the cache directory the config points at.
 //
 pub fn resolveCacheDir(context: *const Context, options: ReportOptions) wc.failure.Error![]const u8 {
-    const config_path = try wc.config.resolveConfigPath(context.allocator, options.config, context.cwd, context.fail);
+    const config_path = try wc.config.resolveConfigPath(context.io, context.allocator, options.config, context.cwd, context.fail);
     const root_dir = wc.files.dirName(config_path);
-    const config = try wc.config.loadConfig(context.allocator, config_path, context.fail);
+    const config = try wc.config.loadConfig(context.io, context.allocator, config_path, context.fail);
     return wc.files.resolvePath(context.allocator, root_dir, config.cache_dir);
 }
 
@@ -32,7 +32,7 @@ pub fn resolveCacheDir(context: *const Context, options: ReportOptions) wc.failu
 pub fn cacheResetCommand(context: *const Context, options: ReportOptions) wc.failure.Error!u8 {
     const cache_dir = try resolveCacheDir(context, options);
 
-    wc.cache_store.cacheReset(context.allocator, cache_dir) catch |err| {
+    wc.cache_store.cacheReset(context.io, context.allocator, cache_dir) catch |err| {
         return context.fail.set("Failed to reset the cache in \"{s}\": {s}", .{ cache_dir, wc.files.describeError(err) });
     };
 
@@ -57,7 +57,7 @@ pub fn cacheShowCommand(context: *const Context, options: ReportOptions) wc.fail
     const allocator = context.allocator;
 
     const cache_dir = try resolveCacheDir(context, options);
-    var cache = try wc.cache_store.loadCache(allocator, cache_dir);
+    var cache = try wc.cache_store.loadCache(context.io, allocator, cache_dir);
     const entry_count = cache.file_hashes.count();
     const format = try wc.output.parseOutputFormat(options.output, context.fail);
 

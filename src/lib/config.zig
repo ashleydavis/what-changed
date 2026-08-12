@@ -379,10 +379,10 @@ pub fn validateIgnoreExtension(allocator: std.mem.Allocator, extension: []const 
 //
 // Reads a configuration from disk and parses it, naming the path when the file cannot be read.
 //
-pub fn loadConfig(allocator: std.mem.Allocator, config_path: []const u8, fail: *Failure) failure.Error!Config {
+pub fn loadConfig(io: std.Io, allocator: std.mem.Allocator, config_path: []const u8, fail: *Failure) failure.Error!Config {
     const format = try formatForPath(allocator, config_path, fail);
 
-    const raw_text = files.readFile(allocator, config_path) catch |err| {
+    const raw_text = files.readFile(io, allocator, config_path) catch |err| {
         return fail.set("Failed to read the what-changed config at \"{s}\": {s}", .{
             config_path, try files.describeOperation(allocator, err, "open", config_path),
         });
@@ -395,11 +395,11 @@ pub fn loadConfig(allocator: std.mem.Allocator, config_path: []const u8, fail: *
 // Resolves the config file to read: the one named on the command line, or the first known name
 // found in the working directory.
 //
-pub fn resolveConfigPath(allocator: std.mem.Allocator, named_config: ?[]const u8, cwd: []const u8, fail: *Failure) failure.Error![]const u8 {
+pub fn resolveConfigPath(io: std.Io, allocator: std.mem.Allocator, named_config: ?[]const u8, cwd: []const u8, fail: *Failure) failure.Error![]const u8 {
     if (named_config) |named| {
         return files.resolvePath(allocator, cwd, named);
     }
-    return findConfig(allocator, cwd, fail);
+    return findConfig(io, allocator, cwd, fail);
 }
 
 //
@@ -408,10 +408,10 @@ pub fn resolveConfigPath(allocator: std.mem.Allocator, named_config: ?[]const u8
 // Naming every name it looked for matters: "no config found" without the list leaves the user
 // guessing which spellings and formats are allowed.
 //
-pub fn findConfig(allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![]const u8 {
+pub fn findConfig(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![]const u8 {
     for (DEFAULT_CONFIG_NAMES) |name| {
         const candidate = try std.fs.path.join(allocator, &.{ root_dir, name });
-        if (files.fileExists(candidate)) {
+        if (files.fileExists(io, candidate)) {
             return candidate;
         }
     }
@@ -812,74 +812,94 @@ test "validateIgnoreExtension accepts a dotted extension" {
 }
 
 test "resolveConfigPath uses the named config, resolved against the working directory" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     var fail = Failure.init(allocator);
-    try testing.expectEqualStrings("/work/custom.yaml", try resolveConfigPath(allocator, "custom.yaml", "/work", &fail));
-    try testing.expectEqualStrings("/other/custom.yaml", try resolveConfigPath(allocator, "/other/custom.yaml", "/work", &fail));
-    try testing.expectEqualStrings("/work/nested/custom.yaml", try resolveConfigPath(allocator, "nested/custom.yaml", "/work", &fail));
+    try testing.expectEqualStrings("/work/custom.yaml", try resolveConfigPath(io, allocator, "custom.yaml", "/work", &fail));
+    try testing.expectEqualStrings("/other/custom.yaml", try resolveConfigPath(io, allocator, "/other/custom.yaml", "/work", &fail));
+    try testing.expectEqualStrings("/work/nested/custom.yaml", try resolveConfigPath(io, allocator, "nested/custom.yaml", "/work", &fail));
 }
 
 test "findConfig names every name it looked for when there is none" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     var fail = Failure.init(allocator);
-    try testing.expectError(error.Failed, findConfig(allocator, temporary.path, &fail));
+    try testing.expectError(error.Failed, findConfig(io, allocator, temporary.path, &fail));
     try testing.expect(std.mem.indexOf(u8, fail.text(), "what-changed.yaml") != null);
     try testing.expect(std.mem.indexOf(u8, fail.text(), "what-changed.yml") != null);
     try testing.expect(std.mem.indexOf(u8, fail.text(), "what-changed.json") != null);
 }
 
 test "findConfig prefers the names in the order they are listed" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     try temporary.write("what-changed.json", "{}");
     var fail = Failure.init(allocator);
-    const found_json = try findConfig(allocator, temporary.path, &fail);
+    const found_json = try findConfig(io, allocator, temporary.path, &fail);
     try testing.expect(std.mem.endsWith(u8, found_json, "what-changed.json"));
 
     try temporary.write("what-changed.yaml", "targets: []");
-    const found_yaml = try findConfig(allocator, temporary.path, &fail);
+    const found_yaml = try findConfig(io, allocator, temporary.path, &fail);
     try testing.expect(std.mem.endsWith(u8, found_yaml, "what-changed.yaml"));
 }
 
 test "loadConfig reads a config off disk" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     try temporary.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
 
     var fail = Failure.init(allocator);
-    const config = try loadConfig(allocator, try temporary.join(allocator, "what-changed.yaml"), &fail);
+    const config = try loadConfig(io, allocator, try temporary.join(allocator, "what-changed.yaml"), &fail);
     try testing.expectEqualStrings("unit", config.targets[0].name);
 }
 
 test "loadConfig names the path when the file is not there" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     var fail = Failure.init(allocator);
-    try testing.expectError(error.Failed, loadConfig(allocator, try temporary.join(allocator, "missing.yaml"), &fail));
+    try testing.expectError(error.Failed, loadConfig(io, allocator, try temporary.join(allocator, "missing.yaml"), &fail));
     try testing.expect(std.mem.startsWith(u8, fail.text(), "Failed to read the what-changed config at \""));
     try testing.expect(std.mem.indexOf(u8, fail.text(), "missing.yaml") != null);
 

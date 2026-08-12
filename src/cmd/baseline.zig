@@ -19,9 +19,9 @@ const Failure = wc.failure.Failure;
 // Resolves the baseline file the config points at.
 //
 pub fn resolveBaselinePath(context: *const Context, options: ReportOptions) wc.failure.Error![]const u8 {
-    const config_path = try wc.config.resolveConfigPath(context.allocator, options.config, context.cwd, context.fail);
+    const config_path = try wc.config.resolveConfigPath(context.io, context.allocator, options.config, context.cwd, context.fail);
     const root_dir = wc.files.dirName(config_path);
-    const config = try wc.config.loadConfig(context.allocator, config_path, context.fail);
+    const config = try wc.config.loadConfig(context.io, context.allocator, config_path, context.fail);
     return wc.files.resolvePath(context.allocator, root_dir, config.baseline_path);
 }
 
@@ -38,7 +38,7 @@ pub fn baselineSetCommand(context: *const Context, options: ReportOptions, targe
 pub fn baselineResetCommand(context: *const Context, options: ReportOptions) wc.failure.Error!u8 {
     const baseline_path = try resolveBaselinePath(context, options);
 
-    wc.baseline_store.baselineReset(context.allocator, baseline_path) catch |err| {
+    wc.baseline_store.baselineReset(context.io, context.allocator, baseline_path) catch |err| {
         return context.fail.set("Failed to reset the baseline at \"{s}\": {s}", .{ baseline_path, wc.files.describeError(err) });
     };
 
@@ -53,7 +53,7 @@ pub fn baselineShowCommand(context: *const Context, options: ReportOptions) wc.f
     const allocator = context.allocator;
 
     const baseline_path = try resolveBaselinePath(context, options);
-    var baseline = try wc.baseline_store.loadBaseline(allocator, baseline_path);
+    var baseline = try wc.baseline_store.loadBaseline(context.io, allocator, baseline_path);
     const format = try wc.output.parseOutputFormat(options.output, context.fail);
 
     const target_names = try allocator.dupe([]const u8, baseline.targets.keys());

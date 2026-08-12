@@ -22,7 +22,7 @@ const MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024;
 // whose contents the caller chose. listRepoFiles below is the one the CLI supplies, and it is the
 // only implementation that ships.
 //
-pub const FileLister = *const fn (allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8;
+pub const FileLister = *const fn (io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8;
 
 //
 // Lists every file in the working tree that git would consider part of the project: tracked files
@@ -30,8 +30,8 @@ pub const FileLister = *const fn (allocator: std.mem.Allocator, root_dir: []cons
 // .gitignore semantics without hand-writing an ignore matcher, at the cost of requiring the project
 // to be a git repository.
 //
-pub fn listRepoFiles(allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
-    return parseGitFileList(allocator, try runGitLsFiles(allocator, root_dir, fail));
+pub fn listRepoFiles(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
+    return parseGitFileList(allocator, try runGitLsFiles(io, allocator, root_dir, fail));
 }
 
 //
@@ -96,8 +96,8 @@ pub fn parseGitFileList(allocator: std.mem.Allocator, stdout: []const u8) std.me
 // Kept apart from listRepoFiles so the spawn (its output, a non-zero exit, and a missing git binary)
 // can be exercised on its own.
 //
-pub fn runGitLsFiles(allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![]const u8 {
-    const result = std.process.run(allocator, files.io(), .{
+pub fn runGitLsFiles(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![]const u8 {
+    const result = std.process.run(allocator, io, .{
         .argv = &.{ "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard" },
         .cwd = .{ .path = root_dir },
     }) catch |err| {
@@ -230,25 +230,33 @@ test "parseGitFileList keeps a path holding a space or a newline whole" {
 }
 
 test "runGitLsFiles fails and names git when the directory is not a repository" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     var fail = Failure.init(allocator);
-    try testing.expectError(error.Failed, runGitLsFiles(allocator, temporary.path, &fail));
+    try testing.expectError(error.Failed, runGitLsFiles(io, allocator, temporary.path, &fail));
     try testing.expect(std.mem.startsWith(u8, fail.text(), "git ls-files failed in \""));
     try testing.expect(std.mem.indexOf(u8, fail.text(), temporary.path) != null);
 }
 
 test "listRepoFiles lists what git reports in a real repository" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
     //
@@ -262,7 +270,7 @@ test "listRepoFiles lists what git reports in a real repository" {
     try environment.put("GIT_DIR", git_dir);
     try environment.put("GIT_WORK_TREE", temporary.path);
 
-    const init_result = std.process.run(allocator, files.io(), .{
+    const init_result = std.process.run(allocator, io, .{
         .argv = &.{ "git", "init", "--quiet" },
         .cwd = .{ .path = temporary.path },
         .environ_map = &environment,
@@ -278,7 +286,7 @@ test "listRepoFiles lists what git reports in a real repository" {
     try temporary.write("ignored/hidden.ts", "x");
 
     var fail = Failure.init(allocator);
-    const listed = listRepoFiles(allocator, temporary.path, &fail) catch |err| {
+    const listed = listRepoFiles(io, allocator, temporary.path, &fail) catch |err| {
         std.debug.print("listRepoFiles failed: {s}\n", .{fail.text()});
         return err;
     };

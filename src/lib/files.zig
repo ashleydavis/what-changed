@@ -4,52 +4,13 @@ const std = @import("std");
 // The filesystem operations the rest of the tool is built out of.
 //
 // Zig 0.16 made every filesystem call take an `Io`: the interface that decides how blocking work is
-// actually performed. That is the right design for a program that wants to choose, but this one does
-// not. It is a short-lived command line tool that reads some files, hashes them, and exits, and
-// there is exactly one sensible answer for how to do that.
+// actually performed. Every function here that touches a disk or a clock takes one and passes it on,
+// so there is no hidden answer to "which implementation is this using". The CLI creates exactly one,
+// in main, from what the runtime handed the process, and it reaches everything else by being passed.
 //
-// So the `Io` lives here, created once on first use, and the functions below keep the plain
-// signatures the rest of the project already calls. The alternative was threading an `Io` parameter
-// through roughly two hundred call sites to reach the same result. A caller that wants a different
-// one can install it with `setIo` before anything else runs.
+// A test creates its own with `TestIo`, which is what lets two tests run against different `Io`
+// instances without either being able to affect the other.
 //
-
-//
-// The I/O implementation everything here goes through.
-//
-var installed_io: ?std.Io = null;
-
-//
-// Backs the default implementation. A pointer to this is handed out inside `std.Io`, so it has to
-// outlive every call, which is why it is here rather than on a stack somewhere.
-//
-var default_threaded: std.Io.Threaded = undefined;
-var default_ready = false;
-
-//
-// The `Io` every operation in this file uses, creating the default one the first time it is asked
-// for.
-//
-pub fn io() std.Io {
-    if (installed_io) |existing| return existing;
-
-    if (!default_ready) {
-        default_threaded = .init(std.heap.page_allocator, .{});
-        default_ready = true;
-    }
-    installed_io = default_threaded.io();
-    return installed_io.?;
-}
-
-//
-// Installs the `Io` to use, for a caller that already has one.
-//
-// The CLI does this with the one the runtime handed it, so the whole process shares a single
-// implementation rather than standing a second one up behind its back.
-//
-pub fn setIo(chosen: std.Io) void {
-    installed_io = chosen;
-}
 
 //
 // Path handling. Separate from the I/O above because none of it touches a disk: it is string
@@ -70,8 +31,8 @@ pub const MAX_FILE_BYTES = 256 * 1024 * 1024;
 //
 // Reads a whole file into memory.
 //
-pub fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(io(), path, allocator, .limited(MAX_FILE_BYTES));
+pub fn readFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(MAX_FILE_BYTES));
 }
 
 //
@@ -81,9 +42,9 @@ pub fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 // the tool has always done, so a path that exists but cannot be read is skipped rather than chosen
 // and then refused.
 //
-pub fn fileExists(path: []const u8) bool {
-    const file = std.Io.Dir.cwd().openFile(io(), path, .{}) catch return false;
-    file.close(io());
+pub fn fileExists(io: std.Io, path: []const u8) bool {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    file.close(io);
     return true;
 }
 
@@ -178,37 +139,37 @@ pub fn extension(path: []const u8) []const u8 {
 //
 // Creates a directory and every directory above it, doing nothing when it is already there.
 //
-pub fn makeDirPath(path: []const u8) !void {
-    try std.Io.Dir.cwd().createDirPath(io(), path);
+pub fn makeDirPath(io: std.Io, path: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(io, path);
 }
 
 //
 // Creates the directory a file is going to be written into.
 //
-pub fn makeParentDir(path: []const u8) !void {
-    try makeDirPath(dirName(path));
+pub fn makeParentDir(io: std.Io, path: []const u8) !void {
+    try makeDirPath(io, dirName(path));
 }
 
 //
 // Writes a whole file, replacing whatever was there.
 //
-pub fn writeFile(path: []const u8, contents: []const u8) !void {
-    try std.Io.Dir.cwd().writeFile(io(), .{ .sub_path = path, .data = contents });
+pub fn writeFile(io: std.Io, path: []const u8, contents: []const u8) !void {
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = contents });
 }
 
 //
 // Moves a file, replacing the destination.
 //
-pub fn renameFile(from: []const u8, to: []const u8) !void {
+pub fn renameFile(io: std.Io, from: []const u8, to: []const u8) !void {
     const cwd = std.Io.Dir.cwd();
-    try cwd.rename(from, cwd, to, io());
+    try cwd.rename(from, cwd, to, io);
 }
 
 //
 // Removes a file, and does not mind if it was not there.
 //
-pub fn removeFile(path: []const u8) void {
-    std.Io.Dir.cwd().deleteFile(io(), path) catch {};
+pub fn removeFile(io: std.Io, path: []const u8) void {
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
 //
@@ -217,9 +178,9 @@ pub fn removeFile(path: []const u8) void {
 // Returns `error.PathAlreadyExists` when someone else holds it. The filesystem lets exactly one
 // caller win, which is what makes the lock safe across processes.
 //
-pub fn createFileExclusive(path: []const u8) !void {
-    const file = try std.Io.Dir.cwd().createFile(io(), path, .{ .exclusive = true });
-    file.close(io());
+pub fn createFileExclusive(io: std.Io, path: []const u8) !void {
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{ .exclusive = true });
+    file.close(io);
 }
 
 //
@@ -243,8 +204,8 @@ pub const FileStat = struct {
 //
 // Reads a file's modification time and size without opening it.
 //
-pub fn statFile(path: []const u8) !FileStat {
-    const stat = try std.Io.Dir.cwd().statFile(io(), path, .{});
+pub fn statFile(io: std.Io, path: []const u8) !FileStat {
+    const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
     return .{
         .mtime_ms = @as(f64, @floatFromInt(stat.mtime.nanoseconds)) / std.time.ns_per_ms,
         .size = stat.size,
@@ -254,22 +215,22 @@ pub fn statFile(path: []const u8) !FileStat {
 //
 // Opens a file for reading. The caller closes it with `closeFile`.
 //
-pub fn openFile(path: []const u8) !std.Io.File {
-    return std.Io.Dir.cwd().openFile(io(), path, .{});
+pub fn openFile(io: std.Io, path: []const u8) !std.Io.File {
+    return std.Io.Dir.cwd().openFile(io, path, .{});
 }
 
 //
 // Closes a file opened with `openFile`.
 //
-pub fn closeFile(file: std.Io.File) void {
-    file.close(io());
+pub fn closeFile(io: std.Io, file: std.Io.File) void {
+    file.close(io);
 }
 
 //
 // A reader over an open file, filling the given buffer.
 //
-pub fn fileReader(file: std.Io.File, buffer: []u8) std.Io.File.Reader {
-    return file.reader(io(), buffer);
+pub fn fileReader(io: std.Io, file: std.Io.File, buffer: []u8) std.Io.File.Reader {
+    return file.reader(io, buffer);
 }
 
 //
@@ -278,16 +239,16 @@ pub fn fileReader(file: std.Io.File, buffer: []u8) std.Io.File.Reader {
 // Used to decide whether a lock file is old enough to have been abandoned. In 0.16 the clock, like
 // everything else that talks to the outside, is reached through the `Io`.
 //
-pub fn nowMs() f64 {
-    const stamp = std.Io.Clock.Timestamp.now(io(), .real);
+pub fn nowMs(io: std.Io) f64 {
+    const stamp = std.Io.Clock.Timestamp.now(io, .real);
     return @as(f64, @floatFromInt(stamp.raw.nanoseconds)) / std.time.ns_per_ms;
 }
 
 //
 // Waits for the given number of milliseconds.
 //
-pub fn sleepMs(milliseconds: u64) void {
-    io().sleep(.fromNanoseconds(@intCast(milliseconds * std.time.ns_per_ms)), .real) catch {};
+pub fn sleepMs(io: std.Io, milliseconds: u64) void {
+    io.sleep(.fromNanoseconds(@intCast(milliseconds * std.time.ns_per_ms)), .real) catch {};
 }
 
 //
@@ -309,6 +270,15 @@ pub const TemporaryDir = struct {
     path: []const u8,
 
     //
+    // The `Io` the directory was made with, used for everything done to it afterwards.
+    //
+    // Held rather than passed to each method because a directory only ever makes sense against the
+    // implementation that created it, and a test that had to repeat the same argument on every line
+    // would say nothing extra by doing so.
+    //
+    io: std.Io,
+
+    //
     // Where the path is allocated from. The page allocator rather than a caller's, so a test needs
     // no allocator to make a directory, and nothing here can be mistaken for a leak in the code
     // under test.
@@ -318,23 +288,23 @@ pub const TemporaryDir = struct {
     //
     // Makes a fresh empty directory under the system temporary directory.
     //
-    pub fn create() !TemporaryDir {
+    pub fn create(io: std.Io) !TemporaryDir {
         var random_bytes: [12]u8 = undefined;
-        io().random(&random_bytes);
+        io.random(&random_bytes);
         const suffix = std.fmt.bytesToHex(random_bytes, .lower);
 
         const path = try std.fmt.allocPrint(path_allocator, "/tmp/what-changed-test-{s}", .{suffix});
         errdefer path_allocator.free(path);
 
-        try makeDirPath(path);
-        return .{ .path = path };
+        try makeDirPath(io, path);
+        return .{ .path = path, .io = io };
     }
 
     //
     // Removes the directory and everything in it.
     //
     pub fn destroy(self: *TemporaryDir) void {
-        std.Io.Dir.cwd().deleteTree(io(), self.path) catch {};
+        std.Io.Dir.cwd().deleteTree(self.io, self.path) catch {};
         path_allocator.free(self.path);
         self.path = &.{};
     }
@@ -352,8 +322,8 @@ pub const TemporaryDir = struct {
     pub fn write(self: *const TemporaryDir, sub_path: []const u8, contents: []const u8) !void {
         var buffer: [512]u8 = undefined;
         const full_path = try std.fmt.bufPrint(&buffer, "{s}/{s}", .{ self.path, sub_path });
-        try makeParentDir(full_path);
-        try writeFile(full_path, contents);
+        try makeParentDir(self.io, full_path);
+        try writeFile(self.io, full_path, contents);
     }
 
     //
@@ -362,7 +332,7 @@ pub const TemporaryDir = struct {
     pub fn read(self: *const TemporaryDir, allocator: std.mem.Allocator, sub_path: []const u8) ![]u8 {
         var buffer: [512]u8 = undefined;
         const full_path = try std.fmt.bufPrint(&buffer, "{s}/{s}", .{ self.path, sub_path });
-        return readFile(allocator, full_path);
+        return readFile(self.io, allocator, full_path);
     }
 
     //
@@ -371,7 +341,34 @@ pub const TemporaryDir = struct {
     pub fn has(self: *const TemporaryDir, sub_path: []const u8) bool {
         var buffer: [512]u8 = undefined;
         const full_path = std.fmt.bufPrint(&buffer, "{s}/{s}", .{ self.path, sub_path }) catch return false;
-        return fileExists(full_path);
+        return fileExists(self.io, full_path);
+    }
+};
+
+//
+// An `Io` for one test, torn down with it.
+//
+// Every test that touches a disk makes its own rather than sharing one, so nothing a test does to
+// its `Io` can reach another test. Held by the caller, because the `Io` handed out points back at
+// the `Threaded` inside it and a copy would leave that pointer aimed at the wrong place.
+//
+pub const TestIo = struct {
+    threaded: std.Io.Threaded,
+
+    //
+    // The page allocator rather than the testing allocator: this belongs to the test itself, not to
+    // the code under test, so it must not show up in that code's leak checking.
+    //
+    pub fn init() TestIo {
+        return .{ .threaded = .init(std.heap.page_allocator, .{}) };
+    }
+
+    pub fn io(self: *TestIo) std.Io {
+        return self.threaded.io();
+    }
+
+    pub fn deinit(self: *TestIo) void {
+        self.threaded.deinit();
     }
 };
 
@@ -436,128 +433,167 @@ test "describeOperation reads as one whole message" {
     );
 }
 
-test "io hands back the same implementation every time" {
-    const first = io();
-    const second = io();
-    try testing.expectEqual(first.userdata, second.userdata);
+test "each TestIo is its own implementation" {
+    //
+    // The point of a test making its own: two of them are two separate implementations, so nothing
+    // one test does to its `Io` can be seen by another.
+    //
+    var first = TestIo.init();
+    defer first.deinit();
+    var second = TestIo.init();
+    defer second.deinit();
+
+    try testing.expect(first.io().userdata != second.io().userdata);
 }
 
 test "readFile and writeFile round trip a file" {
+    var test_io = TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try TemporaryDir.create();
+    var temporary = try TemporaryDir.create(io);
     defer temporary.destroy();
 
     const path = try temporary.join(allocator, "nested/file.txt");
-    try makeParentDir(path);
-    try writeFile(path, "contents");
-    try testing.expectEqualStrings("contents", try readFile(allocator, path));
+    try makeParentDir(io, path);
+    try writeFile(io, path, "contents");
+    try testing.expectEqualStrings("contents", try readFile(io, allocator, path));
 }
 
 test "fileExists answers for a file that is there and one that is not" {
+    var test_io = TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try TemporaryDir.create();
+    var temporary = try TemporaryDir.create(io);
     defer temporary.destroy();
 
     try temporary.write("here.txt", "x");
-    try testing.expect(fileExists(try temporary.join(allocator, "here.txt")));
-    try testing.expect(!fileExists(try temporary.join(allocator, "gone.txt")));
+    try testing.expect(fileExists(io, try temporary.join(allocator, "here.txt")));
+    try testing.expect(!fileExists(io, try temporary.join(allocator, "gone.txt")));
 }
 
 test "readFile reports a missing file rather than returning nothing" {
+    var test_io = TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try TemporaryDir.create();
+    var temporary = try TemporaryDir.create(io);
     defer temporary.destroy();
 
-    try testing.expectError(error.FileNotFound, readFile(allocator, try temporary.join(allocator, "gone.txt")));
+    try testing.expectError(error.FileNotFound, readFile(io, allocator, try temporary.join(allocator, "gone.txt")));
 }
 
 test "makeDirPath creates every directory in the path" {
+    var test_io = TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try TemporaryDir.create();
+    var temporary = try TemporaryDir.create(io);
     defer temporary.destroy();
 
     const deep = try temporary.join(allocator, "a/b/c");
-    try makeDirPath(deep);
-    try makeDirPath(deep); // Doing it twice is not an error.
+    try makeDirPath(io, deep);
+    try makeDirPath(io, deep); // Doing it twice is not an error.
 
-    try writeFile(try temporary.join(allocator, "a/b/c/file.txt"), "x");
+    try writeFile(io, try temporary.join(allocator, "a/b/c/file.txt"), "x");
     try testing.expect(temporary.has("a/b/c/file.txt"));
 }
 
 test "renameFile moves a file over whatever was there" {
+    var test_io = TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try TemporaryDir.create();
+    var temporary = try TemporaryDir.create(io);
     defer temporary.destroy();
 
     try temporary.write("from.txt", "new");
     try temporary.write("to.txt", "old");
-    try renameFile(try temporary.join(allocator, "from.txt"), try temporary.join(allocator, "to.txt"));
+    try renameFile(io, try temporary.join(allocator, "from.txt"), try temporary.join(allocator, "to.txt"));
 
     try testing.expectEqualStrings("new", try temporary.read(allocator, "to.txt"));
     try testing.expect(!temporary.has("from.txt"));
 }
 
 test "removeFile deletes a file and does not mind a missing one" {
+    var test_io = TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try TemporaryDir.create();
+    var temporary = try TemporaryDir.create(io);
     defer temporary.destroy();
 
     try temporary.write("gone.txt", "x");
-    removeFile(try temporary.join(allocator, "gone.txt"));
+    removeFile(io, try temporary.join(allocator, "gone.txt"));
     try testing.expect(!temporary.has("gone.txt"));
 
-    removeFile(try temporary.join(allocator, "never-existed.txt"));
+    removeFile(io, try temporary.join(allocator, "never-existed.txt"));
 }
 
 test "createFileExclusive lets exactly one caller win" {
+    var test_io = TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try TemporaryDir.create();
+    var temporary = try TemporaryDir.create(io);
     defer temporary.destroy();
     const lock_path = try temporary.join(allocator, "thing.lock");
 
-    try createFileExclusive(lock_path);
+    try createFileExclusive(io, lock_path);
 
     //
     // The second caller is refused. This is what makes the update lock safe across processes: the
     // filesystem, not this code, decides who gets it.
     //
-    try testing.expectError(error.PathAlreadyExists, createFileExclusive(lock_path));
+    try testing.expectError(error.PathAlreadyExists, createFileExclusive(io, lock_path));
 
-    removeFile(lock_path);
-    try createFileExclusive(lock_path);
+    removeFile(io, lock_path);
+    try createFileExclusive(io, lock_path);
 }
 
 test "statFile reads the size and a plausible modification time" {
+    var test_io = TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try TemporaryDir.create();
+    var temporary = try TemporaryDir.create(io);
     defer temporary.destroy();
 
     try temporary.write("sized.txt", "12345");
-    const stat = try statFile(try temporary.join(allocator, "sized.txt"));
+    const stat = try statFile(io, try temporary.join(allocator, "sized.txt"));
 
     try testing.expectEqual(@as(u64, 5), stat.size);
     //
@@ -568,20 +604,24 @@ test "statFile reads the size and a plausible modification time" {
 }
 
 test "openFile and fileReader stream a file's bytes" {
+    var test_io = TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try TemporaryDir.create();
+    var temporary = try TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("streamed.txt", "abcdefghij");
 
-    const file = try openFile(try temporary.join(allocator, "streamed.txt"));
-    defer closeFile(file);
+    const file = try openFile(io, try temporary.join(allocator, "streamed.txt"));
+    defer closeFile(io, file);
 
     var reader_buffer: [4]u8 = undefined;
     var chunk: [4]u8 = undefined;
-    var reader = fileReader(file, &reader_buffer);
+    var reader = fileReader(io, file, &reader_buffer);
 
     var seen: usize = 0;
     while (true) {
@@ -592,10 +632,21 @@ test "openFile and fileReader stream a file's bytes" {
     try testing.expectEqual(@as(usize, 10), seen);
 }
 
+test "nowMs reads a real wall-clock time" {
+    var test_io = TestIo.init();
+    defer test_io.deinit();
+
+    try testing.expect(nowMs(test_io.io()) > 1_600_000_000_000.0);
+}
+
 test "TemporaryDir gives each caller its own directory" {
-    var first = try TemporaryDir.create();
+    var test_io = TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
+    var first = try TemporaryDir.create(io);
     defer first.destroy();
-    var second = try TemporaryDir.create();
+    var second = try TemporaryDir.create(io);
     defer second.destroy();
 
     try testing.expect(!std.mem.eql(u8, first.path, second.path));

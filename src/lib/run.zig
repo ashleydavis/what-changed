@@ -116,6 +116,14 @@ pub const Context = struct {
     allocator: std.mem.Allocator,
 
     //
+    // How every filesystem call this run makes is performed.
+    //
+    // Carried here rather than reached for, so a run only ever touches the implementation it was
+    // handed: the CLI passes the one the runtime gave the process, and a test passes its own.
+    //
+    io: std.Io,
+
+    //
     // The directory the tool was invoked from.
     //
     cwd: []const u8,
@@ -167,19 +175,19 @@ const Prepared = struct {
 fn prepare(context: *const Context, options: ReportOptions) failure.Error!Prepared {
     const allocator = context.allocator;
 
-    const config_path = try config_module.resolveConfigPath(allocator, options.config, context.cwd, context.fail);
+    const config_path = try config_module.resolveConfigPath(context.io, allocator, options.config, context.cwd, context.fail);
     const root_dir = files.dirName(config_path);
-    const config = try config_module.loadConfig(allocator, config_path, context.fail);
+    const config = try config_module.loadConfig(context.io, allocator, config_path, context.fail);
 
     const cache_dir = try files.resolvePath(allocator, root_dir, config.cache_dir);
-    var cache = try cache_store.loadCache(allocator, cache_dir);
+    var cache = try cache_store.loadCache(context.io, allocator, cache_dir);
 
-    const listed = try context.list_files(allocator, root_dir, context.fail);
+    const listed = try context.list_files(context.io, allocator, root_dir, context.fail);
     const file_paths = try list_files.filterIgnoredFiles(allocator, listed, config.ignore);
-    const hashes = try file_hash.hashFiles(allocator, root_dir, file_paths, &cache.file_hashes);
+    const hashes = try file_hash.hashFiles(context.io, allocator, root_dir, file_paths, &cache.file_hashes);
 
     var pruned = try cache_store.pruneFileHashes(allocator, &cache.file_hashes, file_paths);
-    cache_store.saveFileHashes(allocator, cache_dir, &pruned) catch |err| {
+    cache_store.saveFileHashes(context.io, allocator, cache_dir, &pruned) catch |err| {
         return context.fail.set("Failed to write the file hash cache in \"{s}\": {s}", .{ cache_dir, files.describeError(err) });
     };
 
@@ -206,7 +214,7 @@ pub fn report(context: *const Context, request: ReportRequest) failure.Error!u8 
     // to ignore would report every already-recorded file of that type as deleted.
     //
     const baseline_path = try files.resolvePath(allocator, prepared.root_dir, prepared.config.baseline_path);
-    const loaded = try baseline_store.loadBaseline(allocator, baseline_path);
+    const loaded = try baseline_store.loadBaseline(context.io, allocator, baseline_path);
     const baseline = try filterIgnoredBaseline(allocator, &loaded, prepared.config.ignore);
 
     const format = try output_module.parseOutputFormat(request.options.output, context.fail);
@@ -361,8 +369,8 @@ pub fn structuredReport(allocator: std.mem.Allocator, result: ReportResult, mode
 pub fn listTargets(context: *const Context, options: ReportOptions) failure.Error!u8 {
     const allocator = context.allocator;
 
-    const config_path = try config_module.resolveConfigPath(allocator, options.config, context.cwd, context.fail);
-    const config = try config_module.loadConfig(allocator, config_path, context.fail);
+    const config_path = try config_module.resolveConfigPath(context.io, allocator, options.config, context.cwd, context.fail);
+    const config = try config_module.loadConfig(context.io, allocator, config_path, context.fail);
     const format = try output_module.parseOutputFormat(options.output, context.fail);
 
     var names: std.ArrayList([]const u8) = .empty;
@@ -431,7 +439,7 @@ pub fn runBaseline(context: *const Context, options: ReportOptions, target_names
     }
 
     const baseline_path = try files.resolvePath(allocator, prepared.root_dir, prepared.config.baseline_path);
-    try baseline_store.captureTargets(allocator, baseline_path, &captured, try changed_files.toFileHashes(allocator, &prepared.file_hashes), context.fail);
+    try baseline_store.captureTargets(context.io, allocator, baseline_path, &captured, try changed_files.toFileHashes(allocator, &prepared.file_hashes), context.fail);
 
     var names: std.ArrayList([]const u8) = .empty;
     for (to_capture.items) |target| {
@@ -599,7 +607,8 @@ const testing = std.testing;
 //
 var fake_file_list: []const []const u8 = &.{};
 
-fn fakeLister(allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
+fn fakeLister(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
+    _ = io;
     _ = root_dir;
     _ = fail;
     return allocator.dupe([]const u8, fake_file_list);
@@ -608,31 +617,39 @@ fn fakeLister(allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure
 //
 // A file lister that fails the way a directory outside a git repository does.
 //
-fn failingLister(allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
+fn failingLister(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
+    _ = io;
     _ = allocator;
     return fail.set("git ls-files failed in \"{s}\" with exit code 128: fatal: not a git repository", .{root_dir});
 }
 
 //
-// Everything a run test needs: a throwaway project on disk and somewhere to collect what was
-// printed.
+// Everything a run test needs: a throwaway project on disk, an `Io` of its own, and somewhere to
+// collect what was printed.
 //
 const Harness = struct {
     arena: std.heap.ArenaAllocator,
+    test_io: files.TestIo,
     temporary: files.TemporaryDir,
     captured: std.Io.Writer.Allocating,
     out: Output,
     fail: Failure,
 
+    //
+    // Heap allocated, because the `Io` handed out points back at the `TestIo` inside this struct and
+    // a copy of the struct would leave that pointer aimed at the wrong place.
+    //
     fn create() !*Harness {
         const harness = try testing.allocator.create(Harness);
         harness.* = .{
             .arena = std.heap.ArenaAllocator.init(testing.allocator),
-            .temporary = try files.TemporaryDir.create(),
+            .test_io = .init(),
+            .temporary = undefined,
             .captured = undefined,
             .out = undefined,
             .fail = undefined,
         };
+        harness.temporary = try files.TemporaryDir.create(harness.test_io.io());
         harness.captured = std.Io.Writer.Allocating.init(harness.arena.allocator());
         harness.out = .{ .writer = &harness.captured.writer };
         harness.fail = Failure.init(harness.arena.allocator());
@@ -641,8 +658,16 @@ const Harness = struct {
 
     fn destroy(self: *Harness) void {
         self.temporary.destroy();
+        self.test_io.deinit();
         self.arena.deinit();
         testing.allocator.destroy(self);
+    }
+
+    //
+    // The `Io` everything this test does goes through.
+    //
+    fn io(self: *Harness) std.Io {
+        return self.test_io.io();
     }
 
     fn allocator(self: *Harness) std.mem.Allocator {
@@ -669,6 +694,7 @@ const Harness = struct {
     fn context(self: *Harness, platform: []const u8) Context {
         return .{
             .allocator = self.allocator(),
+            .io = self.io(),
             .cwd = self.temporary.path,
             .list_files = fakeLister,
             .platform = platform,
@@ -992,7 +1018,7 @@ test "report does not read a file twice when the cache is warm" {
     // The cache is written by every run, so the second one finds an entry whose mtime and size still
     // match and answers from it.
     //
-    var cache = try cache_store.loadCache(harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/cache"));
+    var cache = try cache_store.loadCache(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/cache"));
     try testing.expectEqual(@as(usize, 1), cache.file_hashes.count());
     try testing.expectEqual(@as(u64, 6), cache.file_hashes.get("src/a.ts").?.size);
 }
@@ -1010,7 +1036,7 @@ test "runBaseline captures every target when none is named" {
     try testing.expectEqual(@as(u8, 0), try runBaseline(&context, .{}, &.{}));
     try testing.expectEqualStrings("Captured the baseline for 2 target(s): unit, documentation.\n", harness.printed());
 
-    var baseline = try baseline_store.loadBaseline(harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"));
+    var baseline = try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"));
     try testing.expectEqual(@as(usize, 2), baseline.targets.count());
 }
 
@@ -1066,7 +1092,7 @@ test "runBaseline records nothing at all when one of the names is unknown" {
     // Refused as a whole rather than partly applied. A capture that recorded "unit" and then failed
     // would leave the caller believing nothing had been recorded when something had.
     //
-    var baseline = try baseline_store.loadBaseline(harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"));
+    var baseline = try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"));
     try testing.expectEqual(@as(usize, 0), baseline.targets.count());
 }
 
@@ -1083,7 +1109,7 @@ test "runBaseline records only what each target watches" {
 
     _ = try runBaseline(&context, .{}, &.{});
 
-    var baseline = try baseline_store.loadBaseline(harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"));
+    var baseline = try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"));
     try testing.expectEqual(@as(usize, 1), baseline.targets.get("unit").?.count());
     try testing.expect(baseline.targets.get("unit").?.get("stray/x.ts") == null);
 
@@ -1103,7 +1129,7 @@ test "runCacheCapture stores the hashes and touches no baseline" {
     try testing.expectEqual(@as(u8, 0), try runCacheCapture(&context, .{}));
     try testing.expectEqualStrings("Cache captured. 2 file hash(es) stored. The baseline is untouched.\n", harness.printed());
 
-    var cache = try cache_store.loadCache(harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/cache"));
+    var cache = try cache_store.loadCache(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/cache"));
     try testing.expectEqual(@as(usize, 2), cache.file_hashes.count());
 
     //

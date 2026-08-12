@@ -59,8 +59,8 @@ pub const Baseline = struct {
 // also reads as no baseline. Everything then counts as changed, which is the safe direction: the
 // first run after an upgrade does the work rather than skipping it.
 //
-pub fn loadBaseline(allocator: std.mem.Allocator, baseline_path: []const u8) std.mem.Allocator.Error!Baseline {
-    return toBaseline(allocator, try cache_store.readJsonObject(allocator, baseline_path));
+pub fn loadBaseline(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8) std.mem.Allocator.Error!Baseline {
+    return toBaseline(allocator, try cache_store.readJsonObject(io, allocator, baseline_path));
 }
 
 //
@@ -162,15 +162,15 @@ fn applyCapture(capture: Capture, allocator: std.mem.Allocator, current: Value) 
 // one indivisible step: two captures that both read the same baseline and then both write it back
 // would each keep only their own target, and whichever wrote second would discard the other's.
 //
-pub fn captureTargets(allocator: std.mem.Allocator, baseline_path: []const u8, captured: *const TargetBaselines, recorded_files: FileHashes, fail: *Failure) failure.Error!void {
-    try cache_store.updateJsonFile(allocator, baseline_path, Capture{ .captured = captured, .files = recorded_files }, applyCapture, fail);
+pub fn captureTargets(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8, captured: *const TargetBaselines, recorded_files: FileHashes, fail: *Failure) failure.Error!void {
+    try cache_store.updateJsonFile(io, allocator, baseline_path, Capture{ .captured = captured, .files = recorded_files }, applyCapture, fail);
 }
 
 //
 // Records a baseline, creating the directory above it if it is not there yet.
 //
-pub fn saveBaseline(allocator: std.mem.Allocator, baseline_path: []const u8, baseline: *const Baseline) !void {
-    try cache_store.writeJsonFile(allocator, baseline_path, try baselineToValue(allocator, baseline));
+pub fn saveBaseline(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8, baseline: *const Baseline) !void {
+    try cache_store.writeJsonFile(io, allocator, baseline_path, try baselineToValue(allocator, baseline));
 }
 
 //
@@ -180,9 +180,9 @@ pub fn saveBaseline(allocator: std.mem.Allocator, baseline_path: []const u8, bas
 // reset writes rather than deletes: everything that reads it treats empty and absent alike, and a
 // write cannot go wrong the way a delete of a computed path can.
 //
-pub fn baselineReset(allocator: std.mem.Allocator, baseline_path: []const u8) !void {
+pub fn baselineReset(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8) !void {
     const empty = Baseline{ .targets = .empty, .files = .empty };
-    try saveBaseline(allocator, baseline_path, &empty);
+    try saveBaseline(io, allocator, baseline_path, &empty);
 }
 
 const testing = std.testing;
@@ -335,11 +335,15 @@ test "withCapturedTargets adds a target that was never captured before" {
 }
 
 test "loadBaseline reads what saveBaseline wrote" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     const path = try temporary.join(allocator, ".what-changed/baseline.json");
 
@@ -347,83 +351,99 @@ test "loadBaseline reads what saveBaseline wrote" {
         .targets = try baselinesFor(allocator, &.{.{ "unit", &.{.{ "src/a.ts", "1" }} }}),
         .files = try file_hashes_module.fromPairs(allocator, &.{.{ "src/a.ts", "1" }}),
     };
-    try saveBaseline(allocator, path, &baseline);
+    try saveBaseline(io, allocator, path, &baseline);
 
-    var loaded = try loadBaseline(allocator, path);
+    var loaded = try loadBaseline(io, allocator, path);
     try testing.expectEqualStrings("1", loaded.targets.get("unit").?.get("src/a.ts").?);
 }
 
 test "loadBaseline of a missing or damaged file is an empty baseline" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     try temporary.write("damaged.json", "{ not json");
 
-    var missing = try loadBaseline(allocator, try temporary.join(allocator, "gone.json"));
+    var missing = try loadBaseline(io, allocator, try temporary.join(allocator, "gone.json"));
     try testing.expectEqual(@as(usize, 0), missing.targets.count());
 
-    var damaged = try loadBaseline(allocator, try temporary.join(allocator, "damaged.json"));
+    var damaged = try loadBaseline(io, allocator, try temporary.join(allocator, "damaged.json"));
     try testing.expectEqual(@as(usize, 0), damaged.targets.count());
 }
 
 test "captureTargets records a target without touching the others" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     const path = try temporary.join(allocator, "baseline.json");
 
     var fail = Failure.init(allocator);
 
     const first = try baselinesFor(allocator, &.{.{ "unit", &.{.{ "src/a.ts", "1" }} }});
-    try captureTargets(allocator, path, &first, try file_hashes_module.fromPairs(allocator, &.{.{ "src/a.ts", "1" }}), &fail);
+    try captureTargets(io, allocator, path, &first, try file_hashes_module.fromPairs(allocator, &.{.{ "src/a.ts", "1" }}), &fail);
 
     const second = try baselinesFor(allocator, &.{.{ "docs", &.{.{ "docs/g.md", "2" }} }});
-    try captureTargets(allocator, path, &second, try file_hashes_module.fromPairs(allocator, &.{.{ "src/a.ts", "1" }}), &fail);
+    try captureTargets(io, allocator, path, &second, try file_hashes_module.fromPairs(allocator, &.{.{ "src/a.ts", "1" }}), &fail);
 
     //
     // Both are there. The second capture read what the first wrote and added to it, which is what
     // stops one target's capture erasing another's.
     //
-    var loaded = try loadBaseline(allocator, path);
+    var loaded = try loadBaseline(io, allocator, path);
     try testing.expectEqual(@as(usize, 2), loaded.targets.count());
     try testing.expectEqualStrings("1", loaded.targets.get("unit").?.get("src/a.ts").?);
     try testing.expectEqualStrings("2", loaded.targets.get("docs").?.get("docs/g.md").?);
 }
 
 test "captureTargets replaces a target's record when it is captured again" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     const path = try temporary.join(allocator, "baseline.json");
 
     var fail = Failure.init(allocator);
 
     const before = try baselinesFor(allocator, &.{.{ "unit", &.{ .{ "src/a.ts", "1" }, .{ "src/gone.ts", "2" } } }});
-    try captureTargets(allocator, path, &before, .empty, &fail);
+    try captureTargets(io, allocator, path, &before, .empty, &fail);
 
     const after = try baselinesFor(allocator, &.{.{ "unit", &.{.{ "src/a.ts", "changed" }} }});
-    try captureTargets(allocator, path, &after, .empty, &fail);
+    try captureTargets(io, allocator, path, &after, .empty, &fail);
 
-    var loaded = try loadBaseline(allocator, path);
+    var loaded = try loadBaseline(io, allocator, path);
     try testing.expectEqual(@as(usize, 1), loaded.targets.get("unit").?.count());
     try testing.expectEqualStrings("changed", loaded.targets.get("unit").?.get("src/a.ts").?);
 }
 
 test "baselineReset writes an empty baseline rather than deleting the file" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create();
+    var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
     const path = try temporary.join(allocator, "baseline.json");
 
@@ -431,12 +451,12 @@ test "baselineReset writes an empty baseline rather than deleting the file" {
         .targets = try baselinesFor(allocator, &.{.{ "unit", &.{.{ "src/a.ts", "1" }} }}),
         .files = .empty,
     };
-    try saveBaseline(allocator, path, &baseline);
+    try saveBaseline(io, allocator, path, &baseline);
 
-    try baselineReset(allocator, path);
+    try baselineReset(io, allocator, path);
 
-    try testing.expect(files.fileExists(path));
-    var loaded = try loadBaseline(allocator, path);
+    try testing.expect(files.fileExists(io, path));
+    var loaded = try loadBaseline(io, allocator, path);
     try testing.expectEqual(@as(usize, 0), loaded.targets.count());
     try testing.expectEqual(@as(usize, 0), loaded.files.count());
 }
