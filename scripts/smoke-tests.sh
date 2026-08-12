@@ -281,6 +281,15 @@ GIT_DIR="$REPO_DIR/.git" GIT_WORK_TREE="$REPO_DIR" git init --quiet
 
 # Refuse to go any further unless git agrees that the repository is the throwaway one.
 ACTUAL_TOPLEVEL="$(cd "$REPO_DIR" && git rev-parse --show-toplevel)"
+
+# On Windows git answers with a Windows path (C:/Users/...) while mktemp and pwd give the POSIX form
+# (/c/Users/...). Both name the same directory, so the check below has to compare them in one form
+# or the other or it refuses a repository that is exactly where it should be. cygpath does that
+# conversion and ships with Git for Windows; it does not exist elsewhere, so this is skipped there.
+if command -v cygpath >/dev/null 2>&1; then
+    ACTUAL_TOPLEVEL="$(cygpath -u "$ACTUAL_TOPLEVEL")"
+fi
+
 if [ "$ACTUAL_TOPLEVEL" != "$REPO_DIR" ]; then
     echo -e "${RED}ABORTING: expected the repository at $REPO_DIR but git reports $ACTUAL_TOPLEVEL.${NC}"
     echo -e "${RED}Refusing to run any check rather than risk touching a real repository.${NC}"
