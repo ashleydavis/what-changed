@@ -17,7 +17,7 @@ const ReportOptions = wc.run.ReportOptions;
 // picking it out of prose.
 //
 pub fn targetsCommand(context: *const Context, options: ReportOptions) wc.failure.Error!u8 {
-    return wc.run.report(context, .{ .options = options, .mode = .targets });
+    return wc.run.compareFileTree(context, .{ .options = options, .mode = .targets });
 }
 
 //

@@ -224,7 +224,7 @@ test "cacheResetCommand empties the cache and leaves the baseline alone" {
     // "cache reset" would quietly become "run everything again".
     //
     scenario.clear();
-    _ = try wc.run.report(&context, .{ .options = .{}, .mode = .summary });
+    _ = try wc.run.compareFileTree(&context, .{ .options = .{}, .mode = .summary });
     try testing.expect(std.mem.indexOf(u8, scenario.printed(), "No files have changed since the baseline") != null);
 }
 

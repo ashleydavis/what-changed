@@ -15,7 +15,7 @@ const ReportOptions = wc.run.ReportOptions;
 // Prints each target with the changed files under it, then any changed file no target watches.
 //
 pub fn summaryCommand(context: *const Context, options: ReportOptions) wc.failure.Error!u8 {
-    return wc.run.report(context, .{ .options = options, .mode = .summary });
+    return wc.run.compareFileTree(context, .{ .options = options, .mode = .summary });
 }
 
 //

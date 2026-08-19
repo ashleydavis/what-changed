@@ -154,25 +154,65 @@ pub const Context = struct {
 // the tree right now.
 //
 // Three of the four commands need exactly this and differ only in what they do afterwards, so it is
-// prepared once here rather than three times over.
+// worked out once here rather than three times over.
 //
-const Prepared = struct {
+const HashedFileTree = struct {
+    //
+    // The config file that was read, as an absolute path.
+    //
+    // Carried so a message that refuses an unknown target name can say which file the known names
+    // came from, which is the one thing that makes such a message actionable.
+    //
     config_path: []const u8,
+
+    //
+    // The directory holding the config file, which is what every relative path in the config and
+    // every listed file path is resolved against.
+    //
+    // The config's own location defines the project root rather than the working directory, so a run
+    // from a subdirectory reports on the same tree as a run from the top.
+    //
     root_dir: []const u8,
+
+    //
+    // The parsed config: the targets, the ignore rules and where the baseline and cache live.
+    //
     config: Config,
+
+    //
+    // Where the file hash cache lives, resolved against `root_dir`.
+    //
+    // Resolved once here rather than again by each caller, so a run cannot read one cache and write
+    // another.
+    //
     cache_dir: []const u8,
+
+    //
+    // Every file in the tree that survived the ignore rules, relative to `root_dir`.
+    //
+    // Kept alongside the hashes because pruning the cache needs the list of paths that still exist,
+    // which the hashes alone do not give: they say what a file hashed to, not whether it was listed.
+    //
     file_paths: [][]const u8,
+
+    //
+    // What each of those files hashes to right now. This is the whole picture of the tree that the
+    // baseline is compared against.
+    //
     file_hashes: FileHashes,
 };
 
 //
-// Reads the config, lists the files and hashes them, saving the refreshed hash cache.
+// Reads the config, lists the files, hashes them, and writes the refreshed hash cache back to disk.
+//
+// This is where nearly all of a run's time goes: the callers only compare these hashes against the
+// baseline and print.
 //
 // The cache is written whatever happens next, because the per-file hashes are only ever an
 // optimisation: they say nothing about what changed, so recording them cannot make a later report
 // wrong however the run that computed them ends.
 //
-fn prepare(context: *const Context, options: ReportOptions) failure.Error!Prepared {
+fn hashFileTree(context: *const Context, options: ReportOptions) failure.Error!HashedFileTree {
     const allocator = context.allocator;
 
     const config_path = try config_module.resolveConfigPath(context.io, allocator, options.config, context.cwd, context.fail);
@@ -202,20 +242,25 @@ fn prepare(context: *const Context, options: ReportOptions) failure.Error!Prepar
 }
 
 //
-// The whole reporting flow, returning the exit code the process should use.
+// Hashes the tree and compares it against the baseline, printing what it found to `context.out` and
+// returning the exit code the process should use.
 //
-pub fn report(context: *const Context, request: ReportRequest) failure.Error!u8 {
+// All three of "summary", "changes" and "targets" are this one function with a different `mode`, so
+// the comparison happens once and only the rendering differs. Two views cannot disagree about what
+// changed because there is only ever one comparison for them to disagree about.
+//
+pub fn compareFileTree(context: *const Context, request: ReportRequest) failure.Error!u8 {
     const allocator = context.allocator;
 
-    var prepared = try prepare(context, request.options);
+    var tree = try hashFileTree(context, request.options);
 
     //
     // The baseline is filtered by the same rule as the file list. Without this, adding an extension
     // to ignore would report every already-recorded file of that type as deleted.
     //
-    const baseline_path = try files.resolvePath(allocator, prepared.root_dir, prepared.config.baseline_path);
+    const baseline_path = try files.resolvePath(allocator, tree.root_dir, tree.config.baseline_path);
     const loaded = try baseline_store.loadBaseline(context.io, allocator, baseline_path);
-    const baseline = try filterIgnoredBaseline(allocator, &loaded, prepared.config.ignore);
+    const baseline = try filterIgnoredBaseline(allocator, &loaded, tree.config.ignore);
 
     const format = try output_module.parseOutputFormat(request.options.output, context.fail);
 
@@ -226,7 +271,7 @@ pub fn report(context: *const Context, request: ReportRequest) failure.Error!u8 
     // affected while "changes" says there is nothing to report.
     //
     const has_baseline = baseline.targets.count() > 0;
-    const categorized = try categorize.categorizeChanges(allocator, &prepared.config, &prepared.file_hashes, &baseline, context.platform);
+    const categorized = try categorize.categorizeChanges(allocator, &tree.config, &tree.file_hashes, &baseline, context.platform);
 
     //
     // A target that cannot run on this platform never has changed files, so this cannot name one.
@@ -240,7 +285,7 @@ pub fn report(context: *const Context, request: ReportRequest) failure.Error!u8 
 
     try renderReport(allocator, context.out, .{
         .has_baseline = has_baseline,
-        .file_count = prepared.file_hashes.count(),
+        .file_count = tree.file_hashes.count(),
         .changes = try allChangedFiles(allocator, categorized),
         .categorized = categorized,
         .target_names = try target_names.toOwnedSlice(allocator),
@@ -402,7 +447,7 @@ pub fn listTargets(context: *const Context, options: ReportOptions) failure.Erro
 pub fn runBaseline(context: *const Context, options: ReportOptions, target_names: []const []const u8) failure.Error!u8 {
     const allocator = context.allocator;
 
-    var prepared = try prepare(context, options);
+    var tree = try hashFileTree(context, options);
 
     //
     // An unknown name is refused rather than ignored. Capturing a name that matches no target would
@@ -411,12 +456,12 @@ pub fn runBaseline(context: *const Context, options: ReportOptions, target_names
     //
     for (target_names) |requested| {
         var known = false;
-        for (prepared.config.targets) |target| {
+        for (tree.config.targets) |target| {
             if (std.mem.eql(u8, target.name, requested)) known = true;
         }
         if (!known) {
             return context.fail.set("\"{s}\" is not a target in \"{s}\". Known targets: {s}", .{
-                requested, prepared.config_path, try joinTargetNames(allocator, prepared.config),
+                requested, tree.config_path, try joinTargetNames(allocator, tree.config),
             });
         }
     }
@@ -427,7 +472,7 @@ pub fn runBaseline(context: *const Context, options: ReportOptions, target_names
     // is known about them.
     //
     var to_capture: std.ArrayList(config_module.TargetConfig) = .empty;
-    for (prepared.config.targets) |target| {
+    for (tree.config.targets) |target| {
         if (target_names.len == 0 or containsName(target_names, target.name)) {
             try to_capture.append(allocator, target);
         }
@@ -435,11 +480,11 @@ pub fn runBaseline(context: *const Context, options: ReportOptions, target_names
 
     var captured: baseline_store.TargetBaselines = .empty;
     for (to_capture.items) |*target| {
-        try captured.put(allocator, target.name, try categorize.capturedFilesFor(allocator, &prepared.config, target, &prepared.file_hashes));
+        try captured.put(allocator, target.name, try categorize.capturedFilesFor(allocator, &tree.config, target, &tree.file_hashes));
     }
 
-    const baseline_path = try files.resolvePath(allocator, prepared.root_dir, prepared.config.baseline_path);
-    try baseline_store.captureTargets(context.io, allocator, baseline_path, &captured, try changed_files.toFileHashes(allocator, &prepared.file_hashes), context.fail);
+    const baseline_path = try files.resolvePath(allocator, tree.root_dir, tree.config.baseline_path);
+    try baseline_store.captureTargets(context.io, allocator, baseline_path, &captured, try changed_files.toFileHashes(allocator, &tree.file_hashes), context.fail);
 
     var names: std.ArrayList([]const u8) = .empty;
     for (to_capture.items) |target| {
@@ -480,8 +525,9 @@ fn joinTargetNames(allocator: std.mem.Allocator, config: Config) std.mem.Allocat
 // does not touch.
 //
 pub fn runCacheCapture(context: *const Context, options: ReportOptions) failure.Error!u8 {
-    var prepared = try prepare(context, options);
-    context.out.line("Cache captured. {d} file hash(es) stored. The baseline is untouched.", .{prepared.file_hashes.count()});
+    var tree = try hashFileTree(context, options);
+
+    context.out.line("Cache captured. {d} file hash(es) stored. The baseline is untouched.", .{tree.file_hashes.count()});
     return 0;
 }
 
@@ -744,7 +790,7 @@ test "report with no baseline says so and still lists every file" {
     });
 
     const context = harness.context("linux");
-    try testing.expectEqual(@as(u8, 0), try report(&context, .{ .options = .{}, .mode = .summary }));
+    try testing.expectEqual(@as(u8, 0), try compareFileTree(&context, .{ .options = .{}, .mode = .summary }));
 
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "No baseline recorded yet, so every file counts as new.") != null);
     //
@@ -765,7 +811,7 @@ test "report says nothing changed straight after a capture" {
     _ = try runBaseline(&context, .{}, &.{});
     harness.clear();
 
-    _ = try report(&context, .{ .options = .{}, .mode = .summary });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .summary });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "No files have changed since the baseline.") != null);
 }
 
@@ -783,7 +829,7 @@ test "report puts an edit under the target that watches it and not the other" {
     try harness.temporary.write("src/a.ts", "edited");
     harness.clear();
 
-    _ = try report(&context, .{ .options = .{}, .mode = .summary });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .summary });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "unit: 1 changed") != null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "documentation: unchanged") != null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "src/a.ts") != null);
@@ -803,7 +849,7 @@ test "report never mentions a file with an ignored extension" {
     try harness.temporary.write("src/notes.md", "edited notes");
     harness.clear();
 
-    _ = try report(&context, .{ .options = .{}, .mode = .summary });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .summary });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "notes.md") == null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "No files have changed") != null);
 }
@@ -818,7 +864,7 @@ test "report calls out a changed file no target watches" {
     });
     const context = harness.context("linux");
 
-    _ = try report(&context, .{ .options = .{}, .mode = .summary });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .summary });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "Watched by no target") != null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "stray/thing.ts") != null);
 }
@@ -834,7 +880,7 @@ test "report in files mode lists the changes flat, without grouping them" {
     try harness.temporary.write("src/a.ts", "edited");
     harness.clear();
 
-    _ = try report(&context, .{ .options = .{}, .mode = .files });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .files });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "Changed since the baseline:") != null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "src/a.ts") != null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "unit:") == null);
@@ -854,7 +900,7 @@ test "report in targets mode prints one affected name per line and nothing else"
     try harness.temporary.write("src/a.ts", "edited");
     harness.clear();
 
-    _ = try report(&context, .{ .options = .{}, .mode = .targets });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .targets });
     try testing.expectEqualStrings("unit\n", harness.printed());
 }
 
@@ -868,7 +914,7 @@ test "report in targets mode prints nothing when nothing changed" {
     _ = try runBaseline(&context, .{}, &.{});
     harness.clear();
 
-    _ = try report(&context, .{ .options = .{}, .mode = .targets });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .targets });
     try testing.expectEqualStrings("", harness.printed());
 }
 
@@ -883,11 +929,11 @@ test "reporting is not destructive: a second look reports the same change" {
     try harness.temporary.write("src/a.ts", "edited");
 
     harness.clear();
-    _ = try report(&context, .{ .options = .{}, .mode = .targets });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .targets });
     const first = try harness.allocator().dupe(u8, harness.printed());
 
     harness.clear();
-    _ = try report(&context, .{ .options = .{}, .mode = .targets });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .targets });
     try testing.expectEqualStrings(first, harness.printed());
 }
 
@@ -902,13 +948,13 @@ test "report renders json and yaml from the same comparison" {
     try harness.temporary.write("src/a.ts", "edited");
 
     harness.clear();
-    _ = try report(&context, .{ .options = .{ .output = "json" }, .mode = .files });
+    _ = try compareFileTree(&context, .{ .options = .{ .output = "json" }, .mode = .files });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "\"changed\"") != null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "\"kind\": \"modified\"") != null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "Changed since the baseline:") == null);
 
     harness.clear();
-    _ = try report(&context, .{ .options = .{ .output = "yaml" }, .mode = .files });
+    _ = try compareFileTree(&context, .{ .options = .{ .output = "yaml" }, .mode = .files });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "changed:") != null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "kind: modified") != null);
 }
@@ -920,7 +966,7 @@ test "report refuses an unknown output format" {
     try harness.project(TWO_TARGET_CONFIG, &.{.{ "src/a.ts", "source" }});
     const context = harness.context("linux");
 
-    try testing.expectError(error.Failed, report(&context, .{ .options = .{ .output = "xml" }, .mode = .files }));
+    try testing.expectError(error.Failed, compareFileTree(&context, .{ .options = .{ .output = "xml" }, .mode = .files }));
     try testing.expect(std.mem.indexOf(u8, harness.fail.text(), "Unknown --output format") != null);
 }
 
@@ -948,7 +994,7 @@ test "report says wrong-platform rather than unchanged, and json records it" {
     try harness.temporary.write("src/a.ts", "edited");
 
     harness.clear();
-    _ = try report(&context, .{ .options = .{}, .mode = .summary });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .summary });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "elsewhere-only: wrong-platform") != null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "elsewhere-only: unchanged") == null);
     //
@@ -958,12 +1004,12 @@ test "report says wrong-platform rather than unchanged, and json records it" {
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "Watched by no target") == null);
 
     harness.clear();
-    _ = try report(&context, .{ .options = .{}, .mode = .targets });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .targets });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "here-only") != null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "elsewhere-only") == null);
 
     harness.clear();
-    _ = try report(&context, .{ .options = .{ .output = "json" }, .mode = .summary });
+    _ = try compareFileTree(&context, .{ .options = .{ .output = "json" }, .mode = .summary });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "\"appliesHere\": false") != null);
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "\"appliesHere\": true") != null);
 }
@@ -976,7 +1022,7 @@ test "report reads the config named on the command line" {
     try harness.temporary.write("other.yaml", "targets:\n  - name: other\n    paths:\n      - src\n");
 
     const context = harness.context("linux");
-    _ = try report(&context, .{ .options = .{ .config = "other.yaml" }, .mode = .targets });
+    _ = try compareFileTree(&context, .{ .options = .{ .config = "other.yaml" }, .mode = .targets });
     try testing.expectEqualStrings("other\n", harness.printed());
 }
 
@@ -987,7 +1033,7 @@ test "report fails and names the config that is not there" {
     try harness.project(TWO_TARGET_CONFIG, &.{.{ "src/a.ts", "source" }});
     const context = harness.context("linux");
 
-    try testing.expectError(error.Failed, report(&context, .{ .options = .{ .config = "definitely-not-here.yaml" }, .mode = .summary }));
+    try testing.expectError(error.Failed, compareFileTree(&context, .{ .options = .{ .config = "definitely-not-here.yaml" }, .mode = .summary }));
     try testing.expect(std.mem.indexOf(u8, harness.fail.text(), "definitely-not-here.yaml") != null);
 }
 
@@ -1000,7 +1046,7 @@ test "report passes on the file lister's failure" {
     var context = harness.context("linux");
     context.list_files = failingLister;
 
-    try testing.expectError(error.Failed, report(&context, .{ .options = .{}, .mode = .summary }));
+    try testing.expectError(error.Failed, compareFileTree(&context, .{ .options = .{}, .mode = .summary }));
     try testing.expect(std.mem.indexOf(u8, harness.fail.text(), "git ls-files failed") != null);
 }
 
@@ -1011,7 +1057,7 @@ test "report does not read a file twice when the cache is warm" {
     try harness.project(TWO_TARGET_CONFIG, &.{.{ "src/a.ts", "source" }});
     const context = harness.context("linux");
 
-    _ = try report(&context, .{ .options = .{}, .mode = .targets });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .targets });
 
     //
     // The cache is written by every run, so the second one finds an entry whose mtime and size still
@@ -1062,7 +1108,7 @@ test "runBaseline captures only the named target and leaves the others affected"
     // not mark "documentation" as up to date, because that suite never ran.
     //
     harness.clear();
-    _ = try report(&context, .{ .options = .{}, .mode = .targets });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .targets });
     try testing.expectEqualStrings("documentation\n", harness.printed());
 }
 
@@ -1136,7 +1182,7 @@ test "runCacheCapture stores the hashes and touches no baseline" {
     // baseline.
     //
     harness.clear();
-    _ = try report(&context, .{ .options = .{}, .mode = .summary });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .summary });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "No baseline recorded yet") != null);
 }
 
@@ -1168,7 +1214,7 @@ test "listTargets names every runnable target whatever has changed" {
     //
     // Nothing has changed, so "targets" names none, but "targets list" names them all the same.
     //
-    _ = try report(&context, .{ .options = .{}, .mode = .targets });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .targets });
     try testing.expectEqualStrings("", harness.printed());
 
     harness.clear();
@@ -1366,7 +1412,7 @@ test "adding an ignored extension does not read as a pile of deletions" {
     );
 
     harness.clear();
-    _ = try report(&context, .{ .options = .{}, .mode = .summary });
+    _ = try compareFileTree(&context, .{ .options = .{}, .mode = .summary });
     try testing.expect(std.mem.indexOf(u8, harness.printed(), "No files have changed") != null);
 }
 

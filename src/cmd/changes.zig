@@ -15,7 +15,7 @@ const ReportOptions = wc.run.ReportOptions;
 // Prints every file that differs from the baseline.
 //
 pub fn changesCommand(context: *const Context, options: ReportOptions) wc.failure.Error!u8 {
-    return wc.run.report(context, .{ .options = options, .mode = .files });
+    return wc.run.compareFileTree(context, .{ .options = options, .mode = .files });
 }
 
 //
