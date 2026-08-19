@@ -17,12 +17,12 @@ const MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024;
 //
 // Enumerates the files a run considers.
 //
-// `report` takes one of these rather than calling listRepoFiles itself, for the same reason it takes
-// cwd and platform rather than reading the process: the flow can then be driven against a directory
-// whose contents the caller chose. listRepoFiles below is the one the CLI supplies, and it is the
-// only implementation that ships.
+// `compareFileTree` takes one of these rather than calling listRepoFiles itself, for the same reason
+// it takes cwd and platform rather than reading the process: the flow can then be driven against a
+// directory whose contents the caller chose. listRepoFiles below is the one the CLI supplies, and it
+// is the only implementation that ships.
 //
-pub const FileLister = *const fn (io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8;
+pub const FileLister = *const fn (io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8;
 
 //
 // Lists every file in the working tree that git would consider part of the project: tracked files
@@ -30,8 +30,8 @@ pub const FileLister = *const fn (io: std.Io, allocator: std.mem.Allocator, root
 // .gitignore semantics without hand-writing an ignore matcher, at the cost of requiring the project
 // to be a git repository.
 //
-pub fn listRepoFiles(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
-    return parseGitFileList(allocator, try runGitLsFiles(io, allocator, root_dir, fail));
+pub fn listRepoFiles(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
+    return parseGitFileList(allocator, try runGitLsFiles(io, environ, allocator, root_dir, fail));
 }
 
 //
@@ -96,10 +96,17 @@ pub fn parseGitFileList(allocator: std.mem.Allocator, stdout: []const u8) std.me
 // Kept apart from listRepoFiles so the spawn (its output, a non-zero exit, and a missing git binary)
 // can be exercised on its own.
 //
-pub fn runGitLsFiles(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![]const u8 {
+// The environment is a parameter rather than inherited from the process. `GIT_DIR`, `GIT_WORK_TREE`
+// and `GIT_CONFIG_GLOBAL` all change which files git reports, so a run whose environment came from
+// nowhere in particular can report on a different tree than the one it was pointed at, with nothing
+// in the signature saying it could. `std.process.run` inherits the parent's environment when this is
+// left unset, which is the behaviour being removed.
+//
+pub fn runGitLsFiles(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![]const u8 {
     const result = std.process.run(allocator, io, .{
         .argv = &.{ "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard" },
         .cwd = .{ .path = root_dir },
+        .environ_map = environ,
     }) catch |err| {
         //
         // git could not be started at all, which usually means it is not installed. Named as such
@@ -241,8 +248,11 @@ test "runGitLsFiles fails and names git when the directory is not a repository" 
     var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
+    var environment = std.process.Environ.Map.init(allocator);
+    defer environment.deinit();
+
     var fail = Failure.init(allocator);
-    try testing.expectError(error.Failed, runGitLsFiles(io, allocator, temporary.path, &fail));
+    try testing.expectError(error.Failed, runGitLsFiles(io, &environment, allocator, temporary.path, &fail));
     try testing.expect(std.mem.startsWith(u8, fail.text(), "git ls-files failed in \""));
     try testing.expect(std.mem.indexOf(u8, fail.text(), temporary.path) != null);
 }
@@ -263,6 +273,10 @@ test "listRepoFiles lists what git reports in a real repository" {
     // GIT_DIR and GIT_WORK_TREE are both set, so git uses exactly this directory and does not search
     // upwards for an enclosing repository. Without them a test run from inside a checkout would
     // initialise, or worse touch, the real one.
+    //
+    // The same map is handed to listRepoFiles below, which is what the environment being a parameter
+    // buys: the listing is pinned to this repository rather than to whatever the test runner was
+    // started with.
     //
     var environment = std.process.Environ.Map.init(allocator);
     defer environment.deinit();
@@ -286,7 +300,7 @@ test "listRepoFiles lists what git reports in a real repository" {
     try temporary.write("ignored/hidden.ts", "x");
 
     var fail = Failure.init(allocator);
-    const listed = listRepoFiles(io, allocator, temporary.path, &fail) catch |err| {
+    const listed = listRepoFiles(io, &environment, allocator, temporary.path, &fail) catch |err| {
         std.debug.print("listRepoFiles failed: {s}\n", .{fail.text()});
         return err;
     };

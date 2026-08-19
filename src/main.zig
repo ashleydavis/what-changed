@@ -150,6 +150,11 @@ fn run(init: std.process.Init, allocator: std.mem.Allocator, out: *Output, fail:
         // through a single implementation rather than one each part stood up for itself.
         //
         .io = init.io,
+        //
+        // The process's own environment, passed down rather than left for `git ls-files` to inherit,
+        // so what the tool reports on is decided by something the run was handed.
+        //
+        .environ = init.environ_map,
         .cwd = cwd,
         .list_files = wc.list_files.listRepoFiles,
         .platform = platformName(),

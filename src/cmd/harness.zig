@@ -26,8 +26,9 @@ var file_list: []const []const u8 = &.{};
 //
 // Answers with whatever the scenario last wrote, in place of asking git.
 //
-fn listFromScenario(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) wc.failure.Error![][]const u8 {
+fn listFromScenario(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) wc.failure.Error![][]const u8 {
     _ = io;
+    _ = environ;
     _ = root_dir;
     _ = fail;
     return allocator.dupe([]const u8, file_list);
@@ -45,6 +46,12 @@ pub const Scenario = struct {
     fail: Failure,
 
     //
+    // Empty, because the scenario's lister never spawns anything. Held here so the context can point
+    // at a real map rather than the test run's own environment.
+    //
+    environ: std.process.Environ.Map,
+
+    //
     // Makes an empty project in a throwaway directory.
     //
     pub fn create() !*Scenario {
@@ -56,8 +63,10 @@ pub const Scenario = struct {
             .captured = undefined,
             .out = undefined,
             .fail = undefined,
+            .environ = undefined,
         };
         scenario.temporary = try wc.files.TemporaryDir.create(scenario.test_io.io());
+        scenario.environ = std.process.Environ.Map.init(scenario.arena.allocator());
         scenario.captured = std.Io.Writer.Allocating.init(scenario.arena.allocator());
         scenario.out = .{ .writer = &scenario.captured.writer };
         scenario.fail = Failure.init(scenario.arena.allocator());
@@ -125,6 +134,7 @@ pub const Scenario = struct {
         return .{
             .allocator = self.allocator(),
             .io = self.io(),
+            .environ = &self.environ,
             .cwd = self.temporary.path,
             .list_files = listFromScenario,
             .platform = platform,
@@ -168,7 +178,7 @@ test "project writes the config and the files, and the lister reports them" {
     try testing.expect(scenario.temporary.has("src/a.ts"));
 
     var fail = Failure.init(scenario.allocator());
-    const listed = try listFromScenario(scenario.io(), scenario.allocator(), scenario.temporary.path, &fail);
+    const listed = try listFromScenario(scenario.io(), &scenario.environ, scenario.allocator(), scenario.temporary.path, &fail);
     try testing.expectEqual(@as(usize, 2), listed.len);
     try testing.expectEqualStrings("src/a.ts", listed[0]);
 }

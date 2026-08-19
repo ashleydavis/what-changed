@@ -124,6 +124,16 @@ pub const Context = struct {
     io: std.Io,
 
     //
+    // The environment every child process this run spawns is given.
+    //
+    // Carried for the same reason as `io`: `git ls-files` reads `GIT_DIR`, `GIT_WORK_TREE` and
+    // `GIT_CONFIG_GLOBAL`, so the environment decides which files the tool reports on. The CLI passes
+    // the one the runtime gave the process, and a test passes its own rather than having the file
+    // list depend on whatever the test runner happened to be started with.
+    //
+    environ: *const std.process.Environ.Map,
+
+    //
     // The directory the tool was invoked from.
     //
     cwd: []const u8,
@@ -222,7 +232,7 @@ fn hashFileTree(context: *const Context, options: ReportOptions) failure.Error!H
     const cache_dir = try files.resolvePath(allocator, root_dir, config.cache_dir);
     var cache = try cache_store.loadCache(context.io, allocator, cache_dir);
 
-    const listed = try context.list_files(context.io, allocator, root_dir, context.fail);
+    const listed = try context.list_files(context.io, context.environ, allocator, root_dir, context.fail);
     const file_paths = try list_files.filterIgnoredFiles(allocator, listed, config.ignore);
     const hashes = try file_hash.hashFiles(context.io, allocator, root_dir, file_paths, &cache.file_hashes);
 
@@ -652,8 +662,9 @@ const testing = std.testing;
 //
 var fake_file_list: []const []const u8 = &.{};
 
-fn fakeLister(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
+fn fakeLister(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
     _ = io;
+    _ = environ;
     _ = root_dir;
     _ = fail;
     return allocator.dupe([]const u8, fake_file_list);
@@ -662,8 +673,9 @@ fn fakeLister(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fa
 //
 // A file lister that fails the way a directory outside a git repository does.
 //
-fn failingLister(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
+fn failingLister(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
     _ = io;
+    _ = environ;
     _ = allocator;
     return fail.set("git ls-files failed in \"{s}\" with exit code 128: fatal: not a git repository", .{root_dir});
 }
@@ -681,6 +693,12 @@ const Harness = struct {
     fail: Failure,
 
     //
+    // Empty, because the fake lister never spawns anything. Held here so the context can point at a
+    // real map rather than the test run's own environment.
+    //
+    environ: std.process.Environ.Map,
+
+    //
     // Heap allocated, because the `Io` handed out points back at the `TestIo` inside this struct and
     // a copy of the struct would leave that pointer aimed at the wrong place.
     //
@@ -693,8 +711,10 @@ const Harness = struct {
             .captured = undefined,
             .out = undefined,
             .fail = undefined,
+            .environ = undefined,
         };
         harness.temporary = try files.TemporaryDir.create(harness.test_io.io());
+        harness.environ = std.process.Environ.Map.init(harness.arena.allocator());
         harness.captured = std.Io.Writer.Allocating.init(harness.arena.allocator());
         harness.out = .{ .writer = &harness.captured.writer };
         harness.fail = Failure.init(harness.arena.allocator());
@@ -740,6 +760,7 @@ const Harness = struct {
         return .{
             .allocator = self.allocator(),
             .io = self.io(),
+            .environ = &self.environ,
             .cwd = self.temporary.path,
             .list_files = fakeLister,
             .platform = platform,
