@@ -37,8 +37,6 @@ Zig:
 | --- | --- | --- | --- | --- |
 | hash (cold, reads every file) | 0.3ms | 3.6ms | 14.4ms | 57.9ms |
 | hash (warm, stat only) | 0.1ms | 0.7ms | 3.6ms | 16.1ms |
-| build hash tree | 0.0ms | 0.3ms | 1.4ms | 8.6ms |
-| lookup every watched path | 0.0ms | 0.0ms | 0.0ms | 0.0ms |
 | diff files (nothing changed) | 0.0ms | 0.1ms | 0.7ms | 2.3ms |
 | diff files (one changed) | 0.0ms | 0.1ms | 0.4ms | 2.4ms |
 
@@ -48,8 +46,6 @@ TypeScript, the same benchmark on the same machine:
 | --- | --- | --- | --- | --- |
 | hash (cold, reads every file) | 2.4ms | 19.0ms | 96.8ms | 372.3ms |
 | hash (warm, stat only) | 0.8ms | 7.6ms | 39.1ms | 157.1ms |
-| build hash tree | 0.8ms | 1.6ms | 6.7ms | 26.8ms |
-| lookup every watched path | 0.1ms | 0.0ms | 0.1ms | 0.2ms |
 | diff files (nothing changed) | 0.1ms | 0.4ms | 2.1ms | 5.3ms |
 | diff files (one changed) | 0.1ms | 0.3ms | 1.9ms | 5.8ms |
 
@@ -59,7 +55,6 @@ How many times faster Zig is, at 20000 files:
 | --- | --- | --- | --- |
 | hash (cold, reads every file) | 372.3ms | 57.9ms | 6.4x faster |
 | hash (warm, stat only) | 157.1ms | 16.1ms | 9.8x faster |
-| build hash tree | 26.8ms | 8.6ms | 3.1x faster |
 | diff files (nothing changed) | 5.3ms | 2.3ms | 2.3x faster |
 | diff files (one changed) | 5.8ms | 2.4ms | 2.4x faster |
 
@@ -69,8 +64,6 @@ Per file, which is what shows whether a stage scales linearly. Zig:
 | --- | --- | --- | --- | --- |
 | hash (cold) | 2.65us | 3.57us | 2.88us | 2.90us |
 | hash (warm) | 0.51us | 0.67us | 0.73us | 0.80us |
-| build hash tree | 0.37us | 0.31us | 0.28us | 0.43us |
-| lookup every watched path | 0.00us | 0.00us | 0.00us | 0.00us |
 | diff files (nothing changed) | 0.08us | 0.10us | 0.14us | 0.11us |
 | diff files (one changed) | 0.07us | 0.09us | 0.09us | 0.12us |
 
@@ -80,8 +73,6 @@ TypeScript:
 | --- | --- | --- | --- | --- |
 | hash (cold) | 24.25us | 19.05us | 19.36us | 18.61us |
 | hash (warm) | 8.03us | 7.61us | 7.83us | 7.86us |
-| build hash tree | 8.11us | 1.60us | 1.34us | 1.34us |
-| lookup every watched path | 0.68us | 0.01us | 0.02us | 0.01us |
 | diff files (nothing changed) | 1.07us | 0.38us | 0.42us | 0.26us |
 | diff files (one changed) | 1.07us | 0.26us | 0.39us | 0.29us |
 
@@ -96,8 +87,6 @@ The two ports run the identical algorithm. Every stage does the same work in the
 **The warm hash path is a stat and a map lookup, and that is where the widest gap is** (9.8x). There is almost no work per file there, so what is being measured is close to the per-operation overhead of each language: a syscall plus a hash lookup, with the string handling and object allocation around it. Zig does that with a stack `statx` and a slice compare; the TypeScript allocates a stats object per file and goes through the async machinery for each one.
 
 **Cold hashing is 6.4x** despite being dominated by reading files, which both do through the same kernel. The gap is the per-file cost around the read: Zig streams into a fixed 64KB buffer and never allocates, while the TypeScript reads each file into a fresh Buffer and hands it to a new hash object.
-
-**Building the hash tree is 3.1x**, the smallest gap of the substantial stages, because it is dominated by allocating and inserting into maps, which both runtimes do reasonably well.
 
 **Memory is where Zig makes the difference cheaply.** The whole run uses one arena, freed once at exit. Nothing in this tool needs anything freed before the process ends, so there is no per-object bookkeeping and no garbage collector to run at all. That is not cleverness on the port's part; it is a fit between the tool's lifetime and the allocation strategy that the TypeScript cannot express.
 
@@ -116,8 +105,6 @@ Where it does not matter: a single check in a build that already takes minutes.
 ## Why it is as fast as it is
 
 **The warm path never opens a file.** `hashFile` stats the file and compares `mtime_ms` and `size` against the cache. Both matching means the recorded hash is returned without a read. That is the difference between the cold and warm rows above: 2.9us per file versus 0.8us, and the 0.8us is essentially one `statx` syscall.
-
-**The tree is built once and queried many times.** Building it is about 0.4us per file and does not depend on how many targets there are. Answering "did anything under this path change" is then a walk of the path's segments, which is why the lookup row is flat no matter how many watched paths a config has.
 
 **Nothing is recomputed between stages.** The run carries the hashes it computed, so recording them after a passing run needs no second pass over the tree.
 
@@ -144,7 +131,7 @@ The same two deliberate choices the TypeScript makes, and for the same reasons.
 zig build perf
 ```
 
-The harness writes throwaway trees under the system temp directory and removes them afterwards. Sizes run 100, 1000, 5000 and 20000 files, and each size measures cold hashing, warm hashing, tree building, watched-path lookup, and the changed-file diff both when nothing changed and when one file did.
+The harness writes throwaway trees under the system temp directory and removes them afterwards. Sizes run 100, 1000, 5000 and 20000 files, and each size measures cold hashing, warm hashing, and the changed-file diff both when nothing changed and when one file did.
 
 The end-to-end numbers at the top were measured by driving both ports' executables as real processes against one generated 2002-file git repository, ten runs each, taking the median.
 

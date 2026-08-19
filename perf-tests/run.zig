@@ -4,9 +4,8 @@ const wc = @import("what-changed");
 //
 // The performance benchmarks.
 //
-// A direct port of perf-tests/run.ts: the same stages, at the same tree sizes, with the same file
-// sizes and the same budget, so the two ports' numbers can be put side by side and mean something.
-// Anything measured differently here would make the comparison worthless.
+// The stages a check is made of, at four tree sizes, so how the cost grows with a project is
+// visible rather than one number from one machine.
 //
 
 //
@@ -125,7 +124,7 @@ fn buildFileTree(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8,
 
 //
 // Measures the stages that decide how long a check takes: hashing with a cold cache, hashing with a
-// warm one, building the hash tree, looking a watched path up in it, and the changed-file diff.
+// warm one, and the changed-file diff.
 //
 fn benchmarkSize(io: std.Io, allocator: std.mem.Allocator, file_count: usize) !bool {
     var temporary = try wc.files.TemporaryDir.create(io);
@@ -150,27 +149,6 @@ fn benchmarkSize(io: std.Io, allocator: std.mem.Allocator, file_count: usize) !b
         out.line("  BUDGET EXCEEDED: warm hashing took {d:.4}ms per file, budget is {d}ms", .{ per_file_ms, WARM_BUDGET_MS_PER_FILE });
         within_budget = false;
     }
-
-    at = start(io);
-    const tree = try wc.merkle.buildTree(allocator, &hashes);
-    try record(allocator, "build hash tree", file_count, elapsedMs(io, at));
-
-    //
-    // One lookup per directory, which is what a config with many targets costs.
-    //
-    var watched_paths: std.StringArrayHashMapUnmanaged(void) = .empty;
-    for (relative_paths) |relative_path| {
-        var segments = std.mem.splitScalar(u8, relative_path, '/');
-        const first = segments.next() orelse continue;
-        const second = segments.next() orelse continue;
-        try watched_paths.put(allocator, try std.fmt.allocPrint(allocator, "{s}/{s}", .{ first, second }), {});
-    }
-
-    at = start(io);
-    for (watched_paths.keys()) |watched_path| {
-        std.mem.doNotOptimizeAway(wc.merkle.hashForPath(tree, watched_path));
-    }
-    try record(allocator, "lookup every watched path", file_count, elapsedMs(io, at));
 
     var baseline = try wc.changed_files.toFileHashes(allocator, &hashes);
 
@@ -418,7 +396,7 @@ test "benchmarkSize measures every stage and stays within budget" {
     out = .{ .writer = &captured.writer };
 
     try testing.expect(try benchmarkSize(io, allocator, 60));
-    try testing.expectEqual(@as(usize, 6), results.items.len);
+    try testing.expectEqual(@as(usize, 4), results.items.len);
 
     for (results.items) |result| {
         try testing.expectEqual(@as(usize, 60), result.file_count);

@@ -77,18 +77,6 @@ Hashing is sequential. In the steady state it is one `stat` per file and nothing
 
 `pruneFileHashes` drops entries for files that are no longer in the list, so a long-lived checkout does not accumulate an entry for every file it has ever had.
 
-## The hash tree
-
-`buildTree` turns the flat map of path to content hash into a tree of `TreeNode`. A file node carries its content hash and no children. A directory node's hash is the SHA-256 over its entries sorted by name, each contributing `name`, a NUL byte, the child hash, and a newline.
-
-Three properties come out of that framing, and each one matters:
-
-- **Order independence.** Sorting by name before hashing means the tree does not depend on the order git listed the files in.
-- **No boundary collisions.** The NUL and the newline stop a name and a hash running together, so a directory holding `ab` with hash `c` cannot hash the same as one holding `a` with hash `bc`. Without that, some renames would leave the directory hash unchanged.
-- **Cheap prefix queries.** `hashForPath` walks the segments and returns that node's hash, so "has anything under `src/parser` changed" is one lookup rather than a scan.
-
-A path that is not in the tree returns the literal `<missing>`. That is deliberate: a target may watch a directory that does not exist yet, and it has to hash to something stable so that creating the first file under it counts as a change rather than being invisible.
-
 ## The diff
 
 `diffFileHashes` compares a set of freshly computed hashes against a recorded set and returns one `ChangedFile` per difference, sorted by path. A path present now but not in the baseline is `added`; present in both with different hashes is `modified`; in the baseline but not present now is `deleted`. A deleted file carries the hash it used to have, since there is no current one.
@@ -231,8 +219,7 @@ The tool only knows about the working tree. Anything outside it is invisible:
 | `src/lib/config.zig` | Finding, parsing and validating the config, in both formats. |
 | `src/lib/list_files.zig` | The git enumeration, its NUL parser, and the `FileLister` type. |
 | `src/lib/file_hash.zig` | Per-file hashing and the mtime/size cache. |
-| `src/lib/file_hashes.zig` | The path-to-hash map both the tree and the stores are built on. |
-| `src/lib/merkle.zig` | The directory hash tree. |
+| `src/lib/file_hashes.zig` | The path-to-hash map the reports and the stores are built on. |
 | `src/lib/changed_files.zig` | The diff against the baseline and its formatting. |
 | `src/lib/categorize.zig` | Sorting changed files into the targets that watch them. |
 | `src/lib/output.zig` | The output formats, the JSON/YAML rendering, and `Output`, which every command prints through. |

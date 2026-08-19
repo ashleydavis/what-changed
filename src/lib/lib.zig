@@ -66,11 +66,6 @@ pub const list_files = @import("list_files.zig");
 pub const changed_files = @import("changed_files.zig");
 
 //
-// The hash tree, which answers "did anything under this directory change" in one lookup.
-//
-pub const merkle = @import("merkle.zig");
-
-//
 // The file hash cache, and the locking that makes concurrent writes safe.
 //
 pub const cache_store = @import("cache_store.zig");
