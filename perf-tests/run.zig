@@ -140,7 +140,7 @@ fn benchmarkSize(io: std.Io, allocator: std.mem.Allocator, file_count: usize) !b
     try record(allocator, "hash (cold, reads every file)", file_count, elapsedMs(io, at));
 
     at = start(io);
-    var hashes = try wc.file_hash.hashFiles(io, allocator, temporary.path, relative_paths, &cold_cache);
+    var hashes = (try wc.file_hash.hashFiles(io, allocator, temporary.path, relative_paths, &cold_cache)).hashes;
     const warm_ms = elapsedMs(io, at);
     try record(allocator, "hash (warm, stat only)", file_count, warm_ms);
 
@@ -150,17 +150,17 @@ fn benchmarkSize(io: std.Io, allocator: std.mem.Allocator, file_count: usize) !b
         within_budget = false;
     }
 
-    var baseline = try wc.changed_files.toFileHashes(allocator, &hashes);
+    var baseline = try hashes.clone(allocator);
 
     at = start(io);
-    std.mem.doNotOptimizeAway(try wc.changed_files.diffFileHashes(allocator, &hashes, &baseline));
+    std.mem.doNotOptimizeAway(try wc.changed_files.diffFileHashes(allocator, &hashes, &baseline, &.{}));
     try record(allocator, "diff files (nothing changed)", file_count, elapsedMs(io, at));
 
     var one_changed = try hashes.clone(allocator);
     try one_changed.put(allocator, relative_paths[0], "changed");
 
     at = start(io);
-    std.mem.doNotOptimizeAway(try wc.changed_files.diffFileHashes(allocator, &one_changed, &baseline));
+    std.mem.doNotOptimizeAway(try wc.changed_files.diffFileHashes(allocator, &one_changed, &baseline, &.{}));
     try record(allocator, "diff files (one changed)", file_count, elapsedMs(io, at));
 
     return within_budget;
@@ -314,7 +314,7 @@ test "buildFileTree gives every file different content, so hashing has real work
     const paths = try buildFileTree(io, allocator, temporary.path, 3);
 
     var cache: wc.file_hash.FileHashCache = .empty;
-    var hashes = try wc.file_hash.hashFiles(io, allocator, temporary.path, paths, &cache);
+    var hashes = (try wc.file_hash.hashFiles(io, allocator, temporary.path, paths, &cache)).hashes;
 
     try testing.expect(!std.mem.eql(u8, hashes.get(paths[0]).?, hashes.get(paths[1]).?));
     try testing.expect(!std.mem.eql(u8, hashes.get(paths[1]).?, hashes.get(paths[2]).?));

@@ -7,12 +7,6 @@ const FileHashes = file_hashes.FileHashes;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 //
-// Stands in for a digest when a file disappeared between being listed and being hashed. A deleted
-// file has to hash to something stable so that the tree above it changes when the file goes away.
-//
-pub const MISSING_FILE_HASH = "<missing>";
-
-//
 // How much of a file is read at a time when hashing it.
 //
 // The whole file is never held in memory: hashing is a streaming operation, so a 64KB window is all
@@ -48,28 +42,52 @@ pub const FileHashEntry = struct {
 pub const FileHashCache = std.StringArrayHashMapUnmanaged(FileHashEntry);
 
 //
-// Returns the SHA-256 hex digest of one file's content, reading the file only when the cached entry
-// no longer matches the file's modification time and size.
+// What came of hashing one file.
 //
-pub fn hashFile(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, relative_path: []const u8, cache: *FileHashCache) std.mem.Allocator.Error![]const u8 {
+// Three outcomes rather than a digest with a stand-in value for the other two. A file that is gone
+// and a file that is there but locked are different things and the tool says different things about
+// them, so they are different values here rather than one placeholder both callers have to recognise
+// by comparing against a magic string.
+//
+pub const HashedFile = union(enum) {
+    //
+    // The SHA-256 hex digest of the file's content.
+    //
+    hashed: []const u8,
+
+    //
+    // The file was listed but is no longer on disk.
+    //
+    // Normal, not an error: the listing and the hashing are two passes over a live working tree, and
+    // git lists a tracked file until the deletion is staged. It is reported as a deletion.
+    //
+    gone,
+
+    //
+    // The file is on disk and something stopped it being read, with the error that stopped it.
+    //
+    // Kept apart from `gone` because the two need opposite responses: a deletion is finished with,
+    // and this will happen again on every run until somebody fixes it.
+    //
+    unreadable: anyerror,
+};
+
+//
+// Hashes one file's content, reading it only when the cached entry no longer matches the file's
+// modification time and size.
+//
+pub fn hashFile(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, relative_path: []const u8, cache: *FileHashCache) std.mem.Allocator.Error!HashedFile {
     const full_path = try files.joinPath(allocator, &.{ root_dir, relative_path });
 
-    const stat = files.statFile(io, full_path) catch {
-        //
-        // Anything that stops the file being looked at is treated as the file not being there.
-        // Every one of those errors means the same thing to the caller: there is no content here to
-        // hash. Reporting it as missing registers as a change, which is the safe direction.
-        //
-        return MISSING_FILE_HASH;
-    };
+    const stat = files.statFile(io, full_path) catch |err| return whyNot(err);
 
     if (cache.get(relative_path)) |cached| {
         if (cached.mtime_ms == stat.mtime_ms and cached.size == stat.size) {
-            return cached.hash;
+            return .{ .hashed = cached.hash };
         }
     }
 
-    const hash = hashFileContent(io, allocator, full_path) catch return MISSING_FILE_HASH;
+    const hash = hashFileContent(io, allocator, full_path) catch |err| return whyNot(err);
 
     //
     // The key is copied because the cache outlives the file list it came from when the caller reuses
@@ -80,7 +98,19 @@ pub fn hashFile(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, 
         .size = stat.size,
         .hash = hash,
     });
-    return hash;
+    return .{ .hashed = hash };
+}
+
+//
+// Sorts an error that stopped a file being hashed into the file having gone or the file being
+// unreadable.
+//
+// FileNotFound is the only one that means the file is not there. Everything else, a permission
+// problem above all, means the entry is still in the tree and something stopped this process reading
+// it, which is worth saying out loud rather than passing off as a deletion.
+//
+fn whyNot(err: anyerror) HashedFile {
+    return if (err == error.FileNotFound) .gone else .{ .unreadable = err };
 }
 
 //
@@ -114,19 +144,49 @@ pub fn hashFileContent(io: std.Io, allocator: std.mem.Allocator, full_path: []co
 }
 
 //
+// What came of hashing a whole set of files.
+//
+pub const HashedFiles = struct {
+    //
+    // Every file that was hashed, and its digest, in the order the paths were given.
+    //
+    // Only files that were actually read. A file that is gone or unreadable is not in here at all,
+    // which is what keeps this map holding nothing but real content hashes: everything downstream can
+    // compare these values without first checking whether one of them is standing in for something
+    // else.
+    //
+    hashes: FileHashes,
+
+    //
+    // The files that are on disk and could not be read, in the order they were hashed.
+    //
+    // Named rather than counted, because the only useful thing to do about one is go and look at it.
+    // The files that were simply gone are not listed: they are absent from `hashes`, which is all the
+    // comparison needs to report them as deletions.
+    //
+    unreadable: [][]const u8,
+};
+
+//
 // Hashes every requested file, sharing one cache across the whole set. Sequential on purpose: in the
 // steady state this is one stat per file, so there is no throughput to win and no file-descriptor
 // ceiling to reason about.
 //
-pub fn hashFiles(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, relative_paths: []const []const u8, cache: *FileHashCache) std.mem.Allocator.Error!FileHashes {
+pub fn hashFiles(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, relative_paths: []const []const u8, cache: *FileHashCache) std.mem.Allocator.Error!HashedFiles {
     var hashes: FileHashes = .empty;
     try hashes.ensureTotalCapacity(allocator, relative_paths.len);
 
+    var unreadable: std.ArrayList([]const u8) = .empty;
+
     for (relative_paths) |relative_path| {
-        try hashes.put(allocator, relative_path, try hashFile(io, allocator, root_dir, relative_path, cache));
+        switch (try hashFile(io, allocator, root_dir, relative_path, cache)) {
+            .hashed => |hash| try hashes.put(allocator, relative_path, hash),
+            .gone => {},
+            .unreadable => try unreadable.append(allocator, relative_path),
+        }
     }
 
-    return hashes;
+    return .{ .hashes = hashes, .unreadable = try unreadable.toOwnedSlice(allocator) };
 }
 
 //
@@ -212,7 +272,7 @@ test "hashFile hashes a file's content" {
     try temporary.write("src/a.ts", "hello\n");
 
     var cache: FileHashCache = .empty;
-    try testing.expectEqualStrings(HELLO_LINE_SHA256, try hashFile(io, allocator, temporary.path, "src/a.ts", &cache));
+    try testing.expectEqualStrings(HELLO_LINE_SHA256, (try hashFile(io, allocator, temporary.path, "src/a.ts", &cache)).hashed);
 }
 
 test "hashFile records what it hashed in the cache" {
@@ -229,7 +289,7 @@ test "hashFile records what it hashed in the cache" {
     try temporary.write("a.ts", "hello\n");
 
     var cache: FileHashCache = .empty;
-    _ = try hashFile(io, allocator, temporary.path, "a.ts", &cache);
+    _ = (try hashFile(io, allocator, temporary.path, "a.ts", &cache)).hashed;
 
     const entry = cache.get("a.ts").?;
     try testing.expectEqualStrings(HELLO_LINE_SHA256, entry.hash);
@@ -251,7 +311,7 @@ test "hashFile answers from the cache when the file has not moved" {
     try temporary.write("a.ts", "hello\n");
 
     var cache: FileHashCache = .empty;
-    _ = try hashFile(io, allocator, temporary.path, "a.ts", &cache);
+    _ = (try hashFile(io, allocator, temporary.path, "a.ts", &cache)).hashed;
 
     //
     // The cached hash is replaced with a value the file's content could never produce. Getting it
@@ -260,7 +320,7 @@ test "hashFile answers from the cache when the file has not moved" {
     const stat = try files.statFile(io, try temporary.join(allocator, "a.ts"));
     try cache.put(allocator, "a.ts", .{ .mtime_ms = stat.mtime_ms, .size = stat.size, .hash = "from-the-cache" });
 
-    try testing.expectEqualStrings("from-the-cache", try hashFile(io, allocator, temporary.path, "a.ts", &cache));
+    try testing.expectEqualStrings("from-the-cache", (try hashFile(io, allocator, temporary.path, "a.ts", &cache)).hashed);
 }
 
 test "hashFile reads the file again when the size no longer matches" {
@@ -280,7 +340,7 @@ test "hashFile reads the file again when the size no longer matches" {
     var cache: FileHashCache = .empty;
     try cache.put(allocator, "a.ts", .{ .mtime_ms = stat.mtime_ms, .size = stat.size + 1, .hash = "stale" });
 
-    try testing.expectEqualStrings(HELLO_LINE_SHA256, try hashFile(io, allocator, temporary.path, "a.ts", &cache));
+    try testing.expectEqualStrings(HELLO_LINE_SHA256, (try hashFile(io, allocator, temporary.path, "a.ts", &cache)).hashed);
 }
 
 test "hashFile reads the file again when the modification time no longer matches" {
@@ -300,7 +360,7 @@ test "hashFile reads the file again when the modification time no longer matches
     var cache: FileHashCache = .empty;
     try cache.put(allocator, "a.ts", .{ .mtime_ms = stat.mtime_ms - 1000, .size = stat.size, .hash = "stale" });
 
-    try testing.expectEqualStrings(HELLO_LINE_SHA256, try hashFile(io, allocator, temporary.path, "a.ts", &cache));
+    try testing.expectEqualStrings(HELLO_LINE_SHA256, (try hashFile(io, allocator, temporary.path, "a.ts", &cache)).hashed);
 }
 
 test "hashFile reports a file that is not there as missing" {
@@ -316,7 +376,7 @@ test "hashFile reports a file that is not there as missing" {
     defer temporary.destroy();
 
     var cache: FileHashCache = .empty;
-    try testing.expectEqualStrings(MISSING_FILE_HASH, try hashFile(io, allocator, temporary.path, "gone.ts", &cache));
+    try testing.expectEqual(HashedFile.gone, try hashFile(io, allocator, temporary.path, "gone.ts", &cache));
     try testing.expect(cache.get("gone.ts") == null);
 }
 
@@ -335,8 +395,8 @@ test "hashFile gives different content different hashes" {
     try temporary.write("b.ts", "two");
 
     var cache: FileHashCache = .empty;
-    const first = try hashFile(io, allocator, temporary.path, "a.ts", &cache);
-    const second = try hashFile(io, allocator, temporary.path, "b.ts", &cache);
+    const first = (try hashFile(io, allocator, temporary.path, "a.ts", &cache)).hashed;
+    const second = (try hashFile(io, allocator, temporary.path, "b.ts", &cache)).hashed;
     try testing.expect(!std.mem.eql(u8, first, second));
 }
 
@@ -357,7 +417,7 @@ test "hashFile hashes a file larger than one read buffer" {
     try temporary.write("big.bin", big);
 
     var cache: FileHashCache = .empty;
-    const hash = try hashFile(io, allocator, temporary.path, "big.bin", &cache);
+    const hash = (try hashFile(io, allocator, temporary.path, "big.bin", &cache)).hashed;
 
     //
     // Hashed in one go for comparison, so the streaming read is checked against a single-shot
@@ -383,15 +443,16 @@ test "hashFiles hashes every path and keeps them in the order given" {
     try temporary.write("a.ts", "one");
 
     var cache: FileHashCache = .empty;
-    var hashes = try hashFiles(io, allocator, temporary.path, &.{ "b.ts", "a.ts" }, &cache);
+    var hashed = try hashFiles(io, allocator, temporary.path, &.{ "b.ts", "a.ts" }, &cache);
 
-    try testing.expectEqual(@as(usize, 2), hashes.count());
-    try testing.expectEqualStrings("b.ts", hashes.keys()[0]);
-    try testing.expectEqualStrings("a.ts", hashes.keys()[1]);
-    try testing.expectEqual(@as(usize, 64), hashes.get("a.ts").?.len);
+    try testing.expectEqual(@as(usize, 2), hashed.hashes.count());
+    try testing.expectEqualStrings("b.ts", hashed.hashes.keys()[0]);
+    try testing.expectEqualStrings("a.ts", hashed.hashes.keys()[1]);
+    try testing.expectEqual(@as(usize, 64), hashed.hashes.get("a.ts").?.len);
+    try testing.expectEqual(@as(usize, 0), hashed.unreadable.len);
 }
 
-test "hashFiles includes a missing file as missing rather than leaving it out" {
+test "hashFiles leaves a missing file out of the hashes and does not call it unreadable" {
     var test_io = files.TestIo.init();
     defer test_io.deinit();
     const io = test_io.io();
@@ -404,11 +465,16 @@ test "hashFiles includes a missing file as missing rather than leaving it out" {
     defer temporary.destroy();
     try temporary.write("here.ts", "x");
 
-    var cache: FileHashCache = .empty;
-    var hashes = try hashFiles(io, allocator, temporary.path, &.{ "here.ts", "gone.ts" }, &cache);
+    var hashed_cache: FileHashCache = .empty;
+    var hashed = try hashFiles(io, allocator, temporary.path, &.{ "here.ts", "gone.ts" }, &hashed_cache);
 
-    try testing.expectEqual(@as(usize, 2), hashes.count());
-    try testing.expectEqualStrings(MISSING_FILE_HASH, hashes.get("gone.ts").?);
+    //
+    // The map holds real digests and nothing else, so a file that is not there is simply absent.
+    // That absence is what the comparison reads as a deletion.
+    //
+    try testing.expectEqual(@as(usize, 1), hashed.hashes.count());
+    try testing.expect(hashed.hashes.get("gone.ts") == null);
+    try testing.expectEqual(@as(usize, 0), hashed.unreadable.len);
 }
 
 test "hashFiles with nothing to hash gives nothing" {
@@ -421,8 +487,9 @@ test "hashFiles with nothing to hash gives nothing" {
     const allocator = arena.allocator();
 
     var cache: FileHashCache = .empty;
-    var hashes = try hashFiles(io, allocator, "/nowhere", &.{}, &cache);
-    try testing.expectEqual(@as(usize, 0), hashes.count());
+    var hashed = try hashFiles(io, allocator, "/nowhere", &.{}, &cache);
+    try testing.expectEqual(@as(usize, 0), hashed.hashes.count());
+    try testing.expectEqual(@as(usize, 0), hashed.unreadable.len);
 }
 
 test "cacheToValue writes each entry as a record, sorted by path" {
@@ -516,7 +583,7 @@ test "a cache survives a round trip through a value, mtime and all" {
     try temporary.write("a.ts", "hello\n");
 
     var cache: FileHashCache = .empty;
-    _ = try hashFile(io, allocator, temporary.path, "a.ts", &cache);
+    _ = (try hashFile(io, allocator, temporary.path, "a.ts", &cache)).hashed;
 
     var round_tripped = try cacheFromValue(allocator, try cacheToValue(allocator, &cache));
 
@@ -537,7 +604,7 @@ test "a cache survives a round trip through a value, mtime and all" {
         .size = reloaded.size,
         .hash = "from-a-round-trip",
     });
-    try testing.expectEqualStrings("from-a-round-trip", try hashFile(io, allocator, temporary.path, "a.ts", &round_tripped));
+    try testing.expectEqualStrings("from-a-round-trip", (try hashFile(io, allocator, temporary.path, "a.ts", &round_tripped)).hashed);
 }
 
 test "hashFileContent digests a file, whatever the cache says" {
@@ -595,7 +662,7 @@ test "hashFileContent reports a file that is not there rather than returning a d
     defer temporary.destroy();
 
     //
-    // hashFile turns this into MISSING_FILE_HASH; this one is the raw operation and says so.
+    // hashFile turns this into `.gone`; this one is the raw operation and returns the error.
     //
     try testing.expectError(error.FileNotFound, hashFileContent(io, allocator, try temporary.join(allocator, "gone.ts")));
 }

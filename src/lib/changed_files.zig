@@ -14,6 +14,16 @@ pub const FileChangeKind = enum {
     deleted,
 
     //
+    // The file is on disk and could not be read, so whether its content differs is unknown.
+    //
+    // Counted as a change rather than left out, because a file whose content cannot be seen cannot be
+    // called unchanged. It is its own kind rather than a modification so that the report says why,
+    // and so it does not read as a deletion, which is what it looked like when every failure produced
+    // the same answer.
+    //
+    unreadable,
+
+    //
     // The word the machine-readable output uses.
     //
     pub fn text(self: FileChangeKind) []const u8 {
@@ -28,6 +38,7 @@ pub const FileChangeKind = enum {
             .added => 'A',
             .modified => 'M',
             .deleted => 'D',
+            .unreadable => 'U',
         };
     }
 };
@@ -47,12 +58,14 @@ pub const ChangedFile = struct {
     kind: FileChangeKind,
 
     //
-    // The file's current content hash, or an empty string for a deleted file.
+    // The file's current content hash, or an empty string when there is no current one: a deleted
+    // file, or one that could not be read.
     //
     hash: []const u8,
 
     //
-    // The file's content hash in the baseline, or an empty string for an added file.
+    // The file's content hash in the baseline, or an empty string for a file the baseline has never
+    // held.
     //
     previous_hash: []const u8,
 
@@ -92,12 +105,26 @@ fn lessThanChange(_: void, left: ChangedFile, right: ChangedFile) bool {
 // Compares the working tree's file hashes against the baseline recorded at the last passing run and
 // returns every difference, sorted by path. Pure, so the whole comparison is testable without a disk.
 //
-pub fn diffFileHashes(allocator: std.mem.Allocator, current: *const FileHashes, baseline: *const FileHashes) std.mem.Allocator.Error![]ChangedFile {
+// `current` holds only files that were read, so a file absent from it and present in the baseline was
+// deleted. `unreadable` names the ones that are on disk and could not be read: they are absent from
+// `current` for a different reason, so they are reported as their own kind rather than being counted
+// among the deletions.
+//
+pub fn diffFileHashes(allocator: std.mem.Allocator, current: *const FileHashes, baseline: *const FileHashes, unreadable: []const []const u8) std.mem.Allocator.Error![]ChangedFile {
     var changes: std.ArrayList(ChangedFile) = .empty;
 
-    var present = try presentFiles(allocator, current);
+    var could_not_read: std.StringArrayHashMapUnmanaged(void) = .empty;
+    for (unreadable) |relative_path| {
+        try could_not_read.put(allocator, relative_path, {});
+        try changes.append(allocator, .{
+            .path = relative_path,
+            .kind = .unreadable,
+            .hash = "",
+            .previous_hash = baseline.get(relative_path) orelse "",
+        });
+    }
 
-    var walker = present.iterator();
+    var walker = current.iterator();
     while (walker.next()) |entry| {
         const relative_path = entry.key_ptr.*;
         const hash = entry.value_ptr.*;
@@ -114,7 +141,7 @@ pub fn diffFileHashes(allocator: std.mem.Allocator, current: *const FileHashes, 
     var recorded = baseline.iterator();
     while (recorded.next()) |entry| {
         const relative_path = entry.key_ptr.*;
-        if (present.get(relative_path) == null) {
+        if (current.get(relative_path) == null and !could_not_read.contains(relative_path)) {
             try changes.append(allocator, .{ .path = relative_path, .kind = .deleted, .hash = "", .previous_hash = entry.value_ptr.* });
         }
     }
@@ -125,40 +152,14 @@ pub fn diffFileHashes(allocator: std.mem.Allocator, current: *const FileHashes, 
 }
 
 //
-// Drops the files that are listed but not actually on disk. git lists a tracked file even after it
-// has been deleted from the working tree, and such a file hashes to MISSING_FILE_HASH. Treating it
-// as present would report a deletion as a modification to the literal text "<missing>".
-//
-pub fn presentFiles(allocator: std.mem.Allocator, current: *const FileHashes) std.mem.Allocator.Error!FileHashes {
-    var present: FileHashes = .empty;
-
-    var walker = current.iterator();
-    while (walker.next()) |entry| {
-        if (!std.mem.eql(u8, entry.value_ptr.*, file_hash.MISSING_FILE_HASH)) {
-            try present.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
-        }
-    }
-
-    return present;
-}
-
-//
-// Turns a map of path to hash into what is stored as the baseline, leaving out any file that is not
-// actually on disk so the baseline only ever holds real content hashes.
-//
-pub fn toFileHashes(allocator: std.mem.Allocator, current: *const FileHashes) std.mem.Allocator.Error!FileHashes {
-    return presentFiles(allocator, current);
-}
-
-//
 // Renders the changed files as the lines the CLI prints: a one-letter kind, the short hash, and the
-// path. A deleted file shows the hash it used to have, since there is no current one.
+// path. A file with no current hash, deleted or unreadable, shows the hash it used to have.
 //
 pub fn formatChangedFiles(allocator: std.mem.Allocator, changes: []const ChangedFile) std.mem.Allocator.Error![][]const u8 {
     var lines: std.ArrayList([]const u8) = .empty;
 
     for (changes) |change| {
-        const shown_hash = if (change.kind == .deleted) change.previous_hash else change.hash;
+        const shown_hash = if (change.hash.len == 0) change.previous_hash else change.hash;
         const short_hash = shown_hash[0..@min(16, shown_hash.len)];
         try lines.append(allocator, try std.fmt.allocPrint(allocator, "  {c}  {s}  {s}", .{
             change.kind.marker(), short_hash, change.path,
@@ -174,10 +175,12 @@ test "FileChangeKind renders its word and its letter" {
     try testing.expectEqualStrings("added", FileChangeKind.added.text());
     try testing.expectEqualStrings("modified", FileChangeKind.modified.text());
     try testing.expectEqualStrings("deleted", FileChangeKind.deleted.text());
+    try testing.expectEqualStrings("unreadable", FileChangeKind.unreadable.text());
 
     try testing.expectEqual(@as(u8, 'A'), FileChangeKind.added.marker());
     try testing.expectEqual(@as(u8, 'M'), FileChangeKind.modified.marker());
     try testing.expectEqual(@as(u8, 'D'), FileChangeKind.deleted.marker());
+    try testing.expectEqual(@as(u8, 'U'), FileChangeKind.unreadable.marker());
 }
 
 test "diffFileHashes reports a file the baseline has never seen as added" {
@@ -188,7 +191,7 @@ test "diffFileHashes reports a file the baseline has never seen as added" {
     var current = try file_hashes.fromPairs(allocator, &.{.{ "src/a.ts", "hash-a" }});
     var baseline: FileHashes = .empty;
 
-    const changes = try diffFileHashes(allocator, &current, &baseline);
+    const changes = try diffFileHashes(allocator, &current, &baseline, &.{});
     try testing.expectEqual(@as(usize, 1), changes.len);
     try testing.expectEqualStrings("src/a.ts", changes[0].path);
     try testing.expectEqual(FileChangeKind.added, changes[0].kind);
@@ -204,7 +207,7 @@ test "diffFileHashes reports a file whose hash moved as modified" {
     var current = try file_hashes.fromPairs(allocator, &.{.{ "src/a.ts", "new" }});
     var baseline = try file_hashes.fromPairs(allocator, &.{.{ "src/a.ts", "old" }});
 
-    const changes = try diffFileHashes(allocator, &current, &baseline);
+    const changes = try diffFileHashes(allocator, &current, &baseline, &.{});
     try testing.expectEqual(@as(usize, 1), changes.len);
     try testing.expectEqual(FileChangeKind.modified, changes[0].kind);
     try testing.expectEqualStrings("new", changes[0].hash);
@@ -219,7 +222,7 @@ test "diffFileHashes reports a file the baseline has but the tree does not as de
     var current: FileHashes = .empty;
     var baseline = try file_hashes.fromPairs(allocator, &.{.{ "src/gone.ts", "old" }});
 
-    const changes = try diffFileHashes(allocator, &current, &baseline);
+    const changes = try diffFileHashes(allocator, &current, &baseline, &.{});
     try testing.expectEqual(@as(usize, 1), changes.len);
     try testing.expectEqual(FileChangeKind.deleted, changes[0].kind);
     try testing.expectEqualStrings("", changes[0].hash);
@@ -234,7 +237,7 @@ test "diffFileHashes reports nothing when nothing moved" {
     var current = try file_hashes.fromPairs(allocator, &.{ .{ "a.ts", "1" }, .{ "b.ts", "2" } });
     var baseline = try file_hashes.fromPairs(allocator, &.{ .{ "a.ts", "1" }, .{ "b.ts", "2" } });
 
-    try testing.expectEqual(@as(usize, 0), (try diffFileHashes(allocator, &current, &baseline)).len);
+    try testing.expectEqual(@as(usize, 0), (try diffFileHashes(allocator, &current, &baseline, &.{})).len);
 }
 
 test "diffFileHashes treats a file listed but not on disk as deleted, not modified" {
@@ -242,10 +245,13 @@ test "diffFileHashes treats a file listed but not on disk as deleted, not modifi
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var current = try file_hashes.fromPairs(allocator, &.{.{ "src/gone.ts", file_hash.MISSING_FILE_HASH }});
+    //
+    // A file that is gone never reaches the map, so "absent from current" is the whole signal.
+    //
+    var current: FileHashes = .empty;
     var baseline = try file_hashes.fromPairs(allocator, &.{.{ "src/gone.ts", "old" }});
 
-    const changes = try diffFileHashes(allocator, &current, &baseline);
+    const changes = try diffFileHashes(allocator, &current, &baseline, &.{});
     try testing.expectEqual(@as(usize, 1), changes.len);
     try testing.expectEqual(FileChangeKind.deleted, changes[0].kind);
 }
@@ -255,10 +261,44 @@ test "diffFileHashes leaves a file that is neither on disk nor in the baseline o
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var current = try file_hashes.fromPairs(allocator, &.{.{ "src/never.ts", file_hash.MISSING_FILE_HASH }});
+    var current: FileHashes = .empty;
     var baseline: FileHashes = .empty;
 
-    try testing.expectEqual(@as(usize, 0), (try diffFileHashes(allocator, &current, &baseline)).len);
+    try testing.expectEqual(@as(usize, 0), (try diffFileHashes(allocator, &current, &baseline, &.{})).len);
+}
+
+test "diffFileHashes reports an unreadable file as unreadable rather than deleted" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    //
+    // The file is in the baseline and absent from the tree's hashes, which on its own reads as a
+    // deletion. Naming it as unreadable is what stops it being reported as one.
+    //
+    var current: FileHashes = .empty;
+    var baseline = try file_hashes.fromPairs(allocator, &.{.{ "src/locked.ts", "old" }});
+
+    const changes = try diffFileHashes(allocator, &current, &baseline, &.{"src/locked.ts"});
+    try testing.expectEqual(@as(usize, 1), changes.len);
+    try testing.expectEqual(FileChangeKind.unreadable, changes[0].kind);
+    try testing.expectEqualStrings("src/locked.ts", changes[0].path);
+    try testing.expectEqualStrings("", changes[0].hash);
+    try testing.expectEqualStrings("old", changes[0].previous_hash);
+}
+
+test "diffFileHashes reports an unreadable file the baseline never held" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var current: FileHashes = .empty;
+    var baseline: FileHashes = .empty;
+
+    const changes = try diffFileHashes(allocator, &current, &baseline, &.{"src/locked.ts"});
+    try testing.expectEqual(@as(usize, 1), changes.len);
+    try testing.expectEqual(FileChangeKind.unreadable, changes[0].kind);
+    try testing.expectEqualStrings("", changes[0].previous_hash);
 }
 
 test "diffFileHashes sorts the changes by path whatever order they came in" {
@@ -276,7 +316,7 @@ test "diffFileHashes sorts the changes by path whatever order they came in" {
         .{ "deleted.ts", "old" },
     });
 
-    const changes = try diffFileHashes(allocator, &current, &baseline);
+    const changes = try diffFileHashes(allocator, &current, &baseline, &.{});
     try testing.expectEqual(@as(usize, 4), changes.len);
     try testing.expectEqualStrings("a.ts", changes[0].path);
     try testing.expectEqualStrings("deleted.ts", changes[1].path);
@@ -300,7 +340,7 @@ test "diffFileHashes reports every kind together" {
         .{ "gone.ts", "old" },
     });
 
-    const changes = try diffFileHashes(allocator, &current, &baseline);
+    const changes = try diffFileHashes(allocator, &current, &baseline, &.{});
     try testing.expectEqual(@as(usize, 3), changes.len);
     try testing.expectEqualStrings("added.ts", changes[0].path);
     try testing.expectEqual(FileChangeKind.added, changes[0].kind);
@@ -310,35 +350,23 @@ test "diffFileHashes reports every kind together" {
     try testing.expectEqual(FileChangeKind.deleted, changes[2].kind);
 }
 
-test "presentFiles drops the files that are not on disk" {
+test "diffFileHashes still reports a deletion beside an unreadable file" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var current = try file_hashes.fromPairs(allocator, &.{
-        .{ "here.ts", "hash" },
-        .{ "gone.ts", file_hash.MISSING_FILE_HASH },
+    var current: FileHashes = .empty;
+    var baseline = try file_hashes.fromPairs(allocator, &.{
+        .{ "gone.ts", "old" },
+        .{ "locked.ts", "old" },
     });
 
-    var present = try presentFiles(allocator, &current);
-    try testing.expectEqual(@as(usize, 1), present.count());
-    try testing.expect(present.get("gone.ts") == null);
-    try testing.expectEqualStrings("hash", present.get("here.ts").?);
-}
-
-test "toFileHashes keeps only the files that are really there" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    var current = try file_hashes.fromPairs(allocator, &.{
-        .{ "here.ts", "hash" },
-        .{ "gone.ts", file_hash.MISSING_FILE_HASH },
-    });
-
-    var stored = try toFileHashes(allocator, &current);
-    try testing.expectEqual(@as(usize, 1), stored.count());
-    try testing.expectEqualStrings("hash", stored.get("here.ts").?);
+    const changes = try diffFileHashes(allocator, &current, &baseline, &.{"locked.ts"});
+    try testing.expectEqual(@as(usize, 2), changes.len);
+    try testing.expectEqualStrings("gone.ts", changes[0].path);
+    try testing.expectEqual(FileChangeKind.deleted, changes[0].kind);
+    try testing.expectEqualStrings("locked.ts", changes[1].path);
+    try testing.expectEqual(FileChangeKind.unreadable, changes[1].kind);
 }
 
 test "formatChangedFiles renders a line per change with a short hash" {
@@ -350,9 +378,10 @@ test "formatChangedFiles renders a line per change with a short hash" {
         .{ .path = "src/a.ts", .kind = .added, .hash = "0123456789abcdef0123", .previous_hash = "" },
         .{ .path = "src/b.ts", .kind = .modified, .hash = "aaaabbbbccccddddeeee", .previous_hash = "old" },
         .{ .path = "src/c.ts", .kind = .deleted, .hash = "", .previous_hash = "ffffeeeeddddcccc1111" },
+        .{ .path = "src/d.ts", .kind = .unreadable, .hash = "", .previous_hash = "1111222233334444aaaa" },
     });
 
-    try testing.expectEqual(@as(usize, 3), lines.len);
+    try testing.expectEqual(@as(usize, 4), lines.len);
     try testing.expectEqualStrings("  A  0123456789abcdef  src/a.ts", lines[0]);
     try testing.expectEqualStrings("  M  aaaabbbbccccdddd  src/b.ts", lines[1]);
     //
@@ -360,6 +389,11 @@ test "formatChangedFiles renders a line per change with a short hash" {
     // column would leave the reader unable to tell which version went away.
     //
     try testing.expectEqualStrings("  D  ffffeeeeddddcccc  src/c.ts", lines[2]);
+
+    //
+    // Same for an unreadable one: the last hash anyone managed to compute is the only one there is.
+    //
+    try testing.expectEqualStrings("  U  1111222233334444  src/d.ts", lines[3]);
 }
 
 test "formatChangedFiles copes with a hash shorter than the short form" {

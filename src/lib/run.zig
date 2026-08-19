@@ -206,10 +206,22 @@ const HashedFileTree = struct {
     file_paths: [][]const u8,
 
     //
-    // What each of those files hashes to right now. This is the whole picture of the tree that the
-    // baseline is compared against.
+    // What each file that could be read hashes to right now. This is the picture of the tree that
+    // the baseline is compared against.
+    //
+    // A file that is gone is not in here, which is how the comparison reports it as deleted. Nor is
+    // one that could not be read: those are in `unreadable` instead, so the two are not confused.
     //
     file_hashes: FileHashes,
+
+    //
+    // The files that are on disk and could not be read, relative to `root_dir`.
+    //
+    // Each one is reported as a change of its own kind. A file whose content cannot be seen cannot be
+    // called unchanged, and saying so is the difference between a permission problem being noticed
+    // and it reading as a deletion on every run for as long as it lasts.
+    //
+    unreadable: [][]const u8,
 };
 
 //
@@ -234,7 +246,7 @@ fn hashFileTree(context: *const Context, options: ReportOptions) failure.Error!H
 
     const listed = try context.list_files(context.io, context.environ, allocator, root_dir, context.fail);
     const file_paths = try list_files.filterIgnoredFiles(allocator, listed, config.ignore);
-    const hashes = try file_hash.hashFiles(context.io, allocator, root_dir, file_paths, &cache.file_hashes);
+    const hashed = try file_hash.hashFiles(context.io, allocator, root_dir, file_paths, &cache.file_hashes);
 
     var pruned = try cache_store.pruneFileHashes(allocator, &cache.file_hashes, file_paths);
     cache_store.saveFileHashes(context.io, allocator, cache_dir, &pruned) catch |err| {
@@ -247,7 +259,8 @@ fn hashFileTree(context: *const Context, options: ReportOptions) failure.Error!H
         .config = config,
         .cache_dir = cache_dir,
         .file_paths = file_paths,
-        .file_hashes = hashes,
+        .file_hashes = hashed.hashes,
+        .unreadable = hashed.unreadable,
     };
 }
 
@@ -281,7 +294,7 @@ pub fn compareFileTree(context: *const Context, request: ReportRequest) failure.
     // affected while "changes" says there is nothing to report.
     //
     const has_baseline = baseline.targets.count() > 0;
-    const categorized = try categorize.categorizeChanges(allocator, &tree.config, &tree.file_hashes, &baseline, context.platform);
+    const categorized = try categorize.categorizeChanges(allocator, &tree.config, &tree.file_hashes, tree.unreadable, &baseline, context.platform);
 
     //
     // A target that cannot run on this platform never has changed files, so this cannot name one.
@@ -295,7 +308,12 @@ pub fn compareFileTree(context: *const Context, request: ReportRequest) failure.
 
     try renderReport(allocator, context.out, .{
         .has_baseline = has_baseline,
-        .file_count = tree.file_hashes.count(),
+        //
+        // Every file that was listed, not every file that was hashed. A deleted or unreadable file
+        // was still checked, and leaving it out would make the count drop for a reason the report
+        // goes on to name.
+        //
+        .file_count = tree.file_paths.len,
         .changes = try allChangedFiles(allocator, categorized),
         .categorized = categorized,
         .target_names = try target_names.toOwnedSlice(allocator),
@@ -494,7 +512,7 @@ pub fn runBaseline(context: *const Context, options: ReportOptions, target_names
     }
 
     const baseline_path = try files.resolvePath(allocator, tree.root_dir, tree.config.baseline_path);
-    try baseline_store.captureTargets(context.io, allocator, baseline_path, &captured, try changed_files.toFileHashes(allocator, &tree.file_hashes), context.fail);
+    try baseline_store.captureTargets(context.io, allocator, baseline_path, &captured, tree.file_hashes, context.fail);
 
     var names: std.ArrayList([]const u8) = .empty;
     for (to_capture.items) |target| {

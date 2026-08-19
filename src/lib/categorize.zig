@@ -143,6 +143,35 @@ pub fn filesUnderWatchedPaths(allocator: std.mem.Allocator, hashes: *const FileH
 }
 
 //
+// Narrows a list of paths to those falling under the given watched paths.
+//
+// The same rule as `filesUnderWatchedPaths`, for the paths that have no hash to carry: a file that
+// could not be read still belongs to whichever targets watch it.
+//
+pub fn pathsUnderWatchedPaths(allocator: std.mem.Allocator, paths: []const []const u8, watched_paths: []const []const u8) std.mem.Allocator.Error![][]const u8 {
+    var under: std.ArrayList([]const u8) = .empty;
+    for (paths) |path| {
+        if (isWatchedBy(path, watched_paths)) {
+            try under.append(allocator, path);
+        }
+    }
+    return under.toOwnedSlice(allocator);
+}
+
+//
+// The other half of `pathsUnderWatchedPaths`: the paths no target watches.
+//
+pub fn pathsNotUnderWatchedPaths(allocator: std.mem.Allocator, paths: []const []const u8, watched_paths: []const []const u8) std.mem.Allocator.Error![][]const u8 {
+    var outside: std.ArrayList([]const u8) = .empty;
+    for (paths) |path| {
+        if (!isWatchedBy(path, watched_paths)) {
+            try outside.append(allocator, path);
+        }
+    }
+    return outside.toOwnedSlice(allocator);
+}
+
+//
 // Works out, for every target, which of the files it watches have changed since that target was last
 // captured.
 //
@@ -150,7 +179,7 @@ pub fn filesUnderWatchedPaths(allocator: std.mem.Allocator, hashes: *const FileH
 // is what lets a caller run one suite, capture just that target, and leave every other target
 // correctly reported as still needing to run.
 //
-pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, hashes: *const FileHashes, baseline: *const Baseline, platform: []const u8) std.mem.Allocator.Error!CategorizedChanges {
+pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, hashes: *const FileHashes, unreadable: []const []const u8, baseline: *const Baseline, platform: []const u8) std.mem.Allocator.Error!CategorizedChanges {
     var targets: std.ArrayList(TargetChanges) = .empty;
 
     for (config.targets) |*target| {
@@ -163,7 +192,12 @@ pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, ha
             var under = try filesUnderWatchedPaths(allocator, hashes, watched_paths);
             const empty: FileHashes = .empty;
             const compared_against = if (recorded) |*existing| existing else &empty;
-            changes = try changed_files.diffFileHashes(allocator, &under, compared_against);
+            changes = try changed_files.diffFileHashes(
+                allocator,
+                &under,
+                compared_against,
+                try pathsUnderWatchedPaths(allocator, unreadable, watched_paths),
+            );
         }
 
         try targets.append(allocator, .{
@@ -198,7 +232,12 @@ pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, ha
     // the whole-tree record instead. That is the only thing it is used for.
     //
     var recorded_unwatched = try unwatchedOnly(allocator, &baseline.files, all_watched_paths.items);
-    const unwatched_files = try changed_files.diffFileHashes(allocator, &unwatched, &recorded_unwatched);
+    const unwatched_files = try changed_files.diffFileHashes(
+        allocator,
+        &unwatched,
+        &recorded_unwatched,
+        try pathsNotUnderWatchedPaths(allocator, unreadable, all_watched_paths.items),
+    );
 
     return .{
         .targets = try targets.toOwnedSlice(allocator),
@@ -226,16 +265,11 @@ pub fn unwatchedOnly(allocator: std.mem.Allocator, recorded: *const FileHashes, 
 //
 // The file hashes a target should record when it is captured: everything it currently watches.
 //
+// `hashes` holds only files that were read, so a file that is gone or unreadable is already absent
+// and a capture records real content hashes and nothing else.
+//
 pub fn capturedFilesFor(allocator: std.mem.Allocator, config: *const Config, target: *const TargetConfig, hashes: *const FileHashes) std.mem.Allocator.Error!FileHashes {
-    const watched_paths = try watchedPathsFor(allocator, config, target);
-    var under = try filesUnderWatchedPaths(allocator, hashes, watched_paths);
-
-    //
-    // A file that is listed but not on disk is left out, so a capture only ever records real content
-    // hashes. Recording "<missing>" would make the file's later reappearance read as a modification
-    // of that literal text.
-    //
-    return changed_files.presentFiles(allocator, &under);
+    return filesUnderWatchedPaths(allocator, hashes, try watchedPathsFor(allocator, config, target));
 }
 
 const testing = std.testing;
@@ -349,6 +383,27 @@ test "filesUnderWatchedPaths keeps only what falls under a watched path" {
     try testing.expect(under.get("stray/x.ts") == null);
 }
 
+test "pathsUnderWatchedPaths keeps only what falls under a watched path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const under = try pathsUnderWatchedPaths(allocator, &.{ "src/a.ts", "docs/g.md", "stray/x.ts" }, &.{ "src", "docs" });
+    try testing.expectEqual(@as(usize, 2), under.len);
+    try testing.expectEqualStrings("src/a.ts", under[0]);
+    try testing.expectEqualStrings("docs/g.md", under[1]);
+}
+
+test "pathsNotUnderWatchedPaths keeps only what falls under none of them" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const outside = try pathsNotUnderWatchedPaths(allocator, &.{ "src/a.ts", "docs/g.md", "stray/x.ts" }, &.{ "src", "docs" });
+    try testing.expectEqual(@as(usize, 1), outside.len);
+    try testing.expectEqualStrings("stray/x.ts", outside[0]);
+}
+
 test "categorizeChanges puts each changed file under the target that watches it" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -369,7 +424,7 @@ test "categorizeChanges puts each changed file under the target that watches it"
     try targets.put(allocator, "docs", try file_hashes_module.fromPairs(allocator, &.{.{ "documentation/g.txt", "same" }}));
     const baseline = Baseline{ .targets = targets, .files = .empty };
 
-    const categorized = try categorizeChanges(allocator, &config, &hashes, &baseline, "linux");
+    const categorized = try categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
 
     try testing.expectEqual(@as(usize, 2), categorized.targets.len);
     try testing.expectEqual(@as(usize, 1), categorized.targets[0].changed_files.len);
@@ -391,7 +446,7 @@ test "categorizeChanges keeps the targets in config order, including the unchang
 
     var hashes: FileHashes = .empty;
     const baseline = Baseline{ .targets = .empty, .files = .empty };
-    const categorized = try categorizeChanges(allocator, &config, &hashes, &baseline, "linux");
+    const categorized = try categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
 
     try testing.expectEqual(@as(usize, 3), categorized.targets.len);
     try testing.expectEqualStrings("compile", categorized.targets[0].name);
@@ -408,7 +463,7 @@ test "categorizeChanges treats a target that was never captured as fully changed
     var hashes = try file_hashes_module.fromPairs(allocator, &.{ .{ "src/a.ts", "1" }, .{ "src/b.ts", "2" } });
     const baseline = Baseline{ .targets = .empty, .files = .empty };
 
-    const categorized = try categorizeChanges(allocator, &config, &hashes, &baseline, "linux");
+    const categorized = try categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
     try testing.expect(!categorized.targets[0].ever_captured);
     try testing.expectEqual(@as(usize, 2), categorized.targets[0].changed_files.len);
     try testing.expectEqual(changed_files.FileChangeKind.added, categorized.targets[0].changed_files[0].kind);
@@ -435,7 +490,7 @@ test "categorizeChanges compares each target against its own record" {
     try targets.put(allocator, "stale", try file_hashes_module.fromPairs(allocator, &.{.{ "src/a.ts", "old" }}));
     const baseline = Baseline{ .targets = targets, .files = .empty };
 
-    const categorized = try categorizeChanges(allocator, &config, &hashes, &baseline, "linux");
+    const categorized = try categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
     try testing.expectEqual(@as(usize, 0), categorized.targets[0].changed_files.len);
     try testing.expectEqual(@as(usize, 1), categorized.targets[1].changed_files.len);
 }
@@ -453,7 +508,7 @@ test "categorizeChanges never gives a wrong-platform target changed files" {
     var hashes = try file_hashes_module.fromPairs(allocator, &.{.{ "src/a.ts", "1" }});
     const baseline = Baseline{ .targets = .empty, .files = .empty };
 
-    const categorized = try categorizeChanges(allocator, &config, &hashes, &baseline, "linux");
+    const categorized = try categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
 
     try testing.expect(categorized.targets[0].applies_here);
     try testing.expectEqual(@as(usize, 1), categorized.targets[0].changed_files.len);
@@ -475,7 +530,7 @@ test "categorizeChanges still counts a wrong-platform target's paths as watched"
     var hashes = try file_hashes_module.fromPairs(allocator, &.{.{ "mobile/app.ts", "1" }});
     const baseline = Baseline{ .targets = .empty, .files = .empty };
 
-    const categorized = try categorizeChanges(allocator, &config, &hashes, &baseline, "linux");
+    const categorized = try categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
     try testing.expectEqual(@as(usize, 0), categorized.unwatched_files.len);
 }
 
@@ -488,7 +543,7 @@ test "categorizeChanges calls out a changed file no target watches" {
     var hashes = try file_hashes_module.fromPairs(allocator, &.{ .{ "src/a.ts", "1" }, .{ "stray/x.ts", "2" } });
     const baseline = Baseline{ .targets = .empty, .files = .empty };
 
-    const categorized = try categorizeChanges(allocator, &config, &hashes, &baseline, "linux");
+    const categorized = try categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
     try testing.expectEqual(@as(usize, 1), categorized.unwatched_files.len);
     try testing.expectEqualStrings("stray/x.ts", categorized.unwatched_files[0].path);
 }
@@ -505,7 +560,7 @@ test "categorizeChanges measures unwatched files against the whole-tree record" 
         .files = try file_hashes_module.fromPairs(allocator, &.{.{ "stray/x.ts", "same" }}),
     };
 
-    const categorized = try categorizeChanges(allocator, &config, &hashes, &baseline, "linux");
+    const categorized = try categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
     try testing.expectEqual(@as(usize, 0), categorized.unwatched_files.len);
 }
 
@@ -529,7 +584,7 @@ test "categorizeChanges does not report a deleted watched file as an unwatched c
         .files = try file_hashes_module.fromPairs(allocator, &.{.{ "src/gone.ts", "old" }}),
     };
 
-    const categorized = try categorizeChanges(allocator, &config, &hashes, &baseline, "linux");
+    const categorized = try categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
     try testing.expectEqual(@as(usize, 1), categorized.targets[0].changed_files.len);
     try testing.expectEqual(@as(usize, 0), categorized.unwatched_files.len);
 }
@@ -565,7 +620,7 @@ test "capturedFilesFor records everything the target currently watches" {
     try testing.expect(captured.get("stray/x.ts") == null);
 }
 
-test "capturedFilesFor leaves out a file that is not on disk" {
+test "capturedFilesFor records only what it was given, which is only what was read" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -573,10 +628,56 @@ test "capturedFilesFor leaves out a file that is not on disk" {
     const config = try configFor(allocator, &.{}, &.{.{ "unit", &.{"src"}, &.{} }});
     var hashes = try file_hashes_module.fromPairs(allocator, &.{
         .{ "src/a.ts", "1" },
-        .{ "src/gone.ts", @import("file_hash.zig").MISSING_FILE_HASH },
+        .{ "docs/b.md", "2" },
     });
 
     var captured = try capturedFilesFor(allocator, &config, &config.targets[0], &hashes);
     try testing.expectEqual(@as(usize, 1), captured.count());
-    try testing.expect(captured.get("src/gone.ts") == null);
+    try testing.expectEqualStrings("1", captured.get("src/a.ts").?);
+}
+
+test "categorizeChanges gives an unreadable file to the target that watches it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const config = try configFor(allocator, &.{}, &.{ .{ "unit", &.{"src"}, &.{} }, .{ "docs", &.{"docs"}, &.{} } });
+    var hashes = try file_hashes_module.fromPairs(allocator, &.{.{ "docs/b.md", "2" }});
+
+    //
+    // Recorded in the baseline and absent from the hashes, which on its own reads as a deletion.
+    // Naming it unreadable is what makes the target's one change say so instead.
+    //
+    var targets: baseline_store.TargetBaselines = .empty;
+    try targets.put(allocator, "unit", try file_hashes_module.fromPairs(allocator, &.{.{ "src/locked.ts", "old" }}));
+    const baseline = Baseline{ .targets = targets, .files = .empty };
+
+    const categorized = try categorizeChanges(allocator, &config, &hashes, &.{"src/locked.ts"}, &baseline, "linux");
+
+    try testing.expectEqual(@as(usize, 1), categorized.targets[0].changed_files.len);
+    try testing.expectEqualStrings("src/locked.ts", categorized.targets[0].changed_files[0].path);
+    try testing.expectEqual(changed_files.FileChangeKind.unreadable, categorized.targets[0].changed_files[0].kind);
+
+    //
+    // The docs target does not watch it, so its only change is its own never-captured file.
+    //
+    try testing.expectEqual(@as(usize, 1), categorized.targets[1].changed_files.len);
+    try testing.expectEqualStrings("docs/b.md", categorized.targets[1].changed_files[0].path);
+}
+
+test "categorizeChanges reports an unreadable file no target watches as unwatched" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const config = try configFor(allocator, &.{}, &.{.{ "unit", &.{"src"}, &.{} }});
+    var hashes: FileHashes = .empty;
+    const baseline = Baseline{ .targets = .empty, .files = .empty };
+
+    const categorized = try categorizeChanges(allocator, &config, &hashes, &.{"loose/locked.ts"}, &baseline, "linux");
+
+    try testing.expectEqual(@as(usize, 0), categorized.targets[0].changed_files.len);
+    try testing.expectEqual(@as(usize, 1), categorized.unwatched_files.len);
+    try testing.expectEqualStrings("loose/locked.ts", categorized.unwatched_files[0].path);
+    try testing.expectEqual(changed_files.FileChangeKind.unreadable, categorized.unwatched_files[0].kind);
 }

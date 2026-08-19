@@ -71,7 +71,9 @@ Both the cache directory and the baseline directory must be gitignored. The tool
 
 Both fields have to match. Size alone misses a same-length edit; mtime alone misses a filesystem with coarse timestamps and misses a restore that resets the timestamp.
 
-A file that has vanished between being listed and being hashed returns the literal `<missing>` rather than an error, and its cache entry is left alone. The listing and the hashing are two separate passes over a live working tree, so this race is normal. `presentFiles` then drops those entries before the diff, so a file git still lists after deletion is reported as deleted rather than as modified to the literal text `<missing>`.
+`hashFile` returns one of three things, not a digest with a stand-in value for the awkward cases: `hashed` with the digest, `gone`, or `unreadable` with the error that stopped it. `gone` means the file vanished between being listed and being hashed, which is normal, because the listing and the hashing are two separate passes over a live working tree and git lists a tracked file until its deletion is staged. `unreadable` means the file is still on disk and something, a permission problem above all, stopped this process reading it.
+
+`hashFiles` puts only the `hashed` files into the map it returns and hands back the unreadable paths beside it. So the map holds real content hashes and nothing else: everything downstream compares those values without first having to check whether one of them is standing in for something else, and a capture writes only hashes it actually computed.
 
 Hashing is sequential. In the steady state it is one `stat` per file and nothing else, so there is no throughput to win and no file-descriptor ceiling to reason about. See [performance.md](performance.md) for what it costs.
 
@@ -80,6 +82,8 @@ Hashing is sequential. In the steady state it is one `stat` per file and nothing
 ## The diff
 
 `diffFileHashes` compares a set of freshly computed hashes against a recorded set and returns one `ChangedFile` per difference, sorted by path. A path present now but not in the baseline is `added`; present in both with different hashes is `modified`; in the baseline but not present now is `deleted`. A deleted file carries the hash it used to have, since there is no current one.
+
+It also takes the paths that could not be read, which is what stops one being reported as a deletion: a file whose content cannot be seen is absent from the hashes for a different reason, so it is reported as `unreadable` instead. It still counts as a change, because a file nobody can read cannot be called unchanged, and it is attributed to the targets that watch it like any other.
 
 It is pure, so the whole comparison is testable without touching a disk.
 

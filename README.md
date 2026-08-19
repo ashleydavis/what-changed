@@ -172,7 +172,9 @@ $ what-changed targets --output json
 
 ### Reading the output
 
-`M` is modified, `A` added, `D` deleted. A deleted file shows the hash it used to have.
+`M` is modified, `A` added, `D` deleted, `U` unreadable. A deleted or unreadable file shows the hash it used to have.
+
+`U` means the file is there and could not be read, a permission problem most of the time. It counts as changed, because a file nobody can read cannot be called unchanged, and it will keep counting as changed on every run until it can be read again. It is reported as its own kind so that it does not read as a deletion.
 
 `what-changed targets` prints nothing when nothing changed. With no baseline recorded it names every target, because nothing can be called unchanged yet.
 
