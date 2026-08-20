@@ -2,8 +2,6 @@
 
 Reports which files have changed since a recorded baseline and which of your project's targets those changes fall under.
 
-A single binary with no runtime to install.
-
 ## What's it for?
 
 It prevents unnecessary rebuilds and retests of parts of the project that have not changed since they were last built or tested.
