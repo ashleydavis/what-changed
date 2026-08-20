@@ -166,10 +166,14 @@ pub fn renameFile(io: std.Io, from: []const u8, to: []const u8) !void {
 }
 
 //
-// Removes a file, and does not mind if it was not there.
+// Removes a file, saying so when it could not.
 //
-pub fn removeFile(io: std.Io, path: []const u8) void {
-    std.Io.Dir.cwd().deleteFile(io, path) catch {};
+// A caller that means "delete this if it is there" writes `catch {}` on the call. That used to be
+// built in, which suited the tidy-up callers and hid the one failure that costs something: an update
+// lock that will not delete blocks every later writer until the abandonment timeout runs out.
+//
+pub fn removeFile(io: std.Io, path: []const u8) !void {
+    try std.Io.Dir.cwd().deleteFile(io, path);
 }
 
 //

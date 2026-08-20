@@ -142,7 +142,12 @@ pub fn writeJsonFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8,
     try files.makeParentDir(io, path);
 
     const temporary_path = try std.fmt.allocPrint(allocator, "{s}.{s}.tmp", .{ path, try randomName(io, allocator) });
-    errdefer files.removeFile(io, temporary_path);
+
+    //
+    // Tidy-up on a write that already failed, so the reason it failed is the one worth reporting and
+    // a stray temporary file is worth nothing next to it.
+    //
+    errdefer files.removeFile(io, temporary_path) catch {};
 
     try files.writeFile(io, temporary_path, try json.stringify(allocator, contents));
     try files.renameFile(io, temporary_path, path);
@@ -211,15 +216,28 @@ pub fn clearAbandonedLock(io: std.Io, lock_path: []const u8) void {
 
     const now_ms = files.nowMs(io);
     if (now_ms - stat.mtime_ms > LOCK_STALE_MS) {
-        files.removeFile(io, lock_path);
+        //
+        // A failed take-over just means the next attempt tries again a moment later, and the caller
+        // is already in a retry loop, so there is nobody here to tell.
+        //
+        files.removeFile(io, lock_path) catch {};
     }
 }
 
 //
-// Releases the lock beside a file.
+// Releases the lock beside a file, saying so when the lock file will not delete.
 //
-pub fn releaseUpdateLock(io: std.Io, lock_path: []const u8) void {
-    files.removeFile(io, lock_path);
+// Worth reporting, unlike the other deletes in this file: a lock nobody can remove makes every later
+// writer wait out `LOCK_STALE_MS` before it can take it over.
+//
+// A lock file that is already gone counts as released. Someone else cleared it as abandoned, or the
+// user deleted it as the timeout message tells them to, and either way it is not there to block
+// anyone.
+//
+pub fn releaseUpdateLock(io: std.Io, lock_path: []const u8) !void {
+    files.removeFile(io, lock_path) catch |err| {
+        if (err != error.FileNotFound) return err;
+    };
 }
 
 //
@@ -253,11 +271,42 @@ pub fn updateJsonFile(
     };
 
     //
-    // Released however this leaves, so a write that fails does not strand the lock and make every
-    // later writer wait out the abandonment timeout.
+    // Held apart from the release, so the lock comes off however the change went and the release
+    // still gets to say it failed. Under a `defer` it could not: a `defer` runs after the last
+    // statement that could report anything.
     //
-    defer releaseUpdateLock(io, lock_path);
+    const changed = changeJsonFile(io, allocator, path, context, mutate, fail);
 
+    releaseUpdateLock(io, lock_path) catch |err| {
+        //
+        // A change that failed has already filled in `fail` with the reason, and that is what the
+        // caller asked about, so it wins over a stranded lock.
+        //
+        try changed;
+
+        return fail.set(
+            "Wrote \"{s}\", then failed to remove the update lock at \"{s}\": {s}. Delete it, or the next {d}s of runs wait for it.",
+            .{ path, lock_path, files.describeError(err), LOCK_STALE_MS / 1000 },
+        );
+    };
+
+    return changed;
+}
+
+//
+// Reads a JSON file, applies a change to what it holds, and writes the result back, with the update
+// lock already held by the caller.
+//
+// Split out of `updateJsonFile` only so the release can be a statement rather than a `defer`.
+//
+fn changeJsonFile(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    context: anytype,
+    comptime mutate: fn (@TypeOf(context), std.mem.Allocator, Value) std.mem.Allocator.Error!Value,
+    fail: *failure.Failure,
+) failure.Error!void {
     const current = (try readJsonObject(io, allocator, path)).contentOrNull();
     writeJsonFile(io, allocator, path, try mutate(context, allocator, current)) catch |err| {
         return fail.set("Failed to write \"{s}\": {s}", .{ path, files.describeError(err) });

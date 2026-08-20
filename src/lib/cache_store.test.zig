@@ -223,7 +223,7 @@ test "takeUpdateLock takes a free lock and refuses a held one" {
     try cache_store.takeUpdateLock(io, lock_path);
     try testing.expect(files.fileExists(io, lock_path));
 
-    cache_store.releaseUpdateLock(io, lock_path);
+    try cache_store.releaseUpdateLock(io, lock_path);
     try testing.expect(!files.fileExists(io, lock_path));
 
     //
@@ -231,7 +231,49 @@ test "takeUpdateLock takes a free lock and refuses a held one" {
     // once in a process's lifetime.
     //
     try cache_store.takeUpdateLock(io, lock_path);
-    cache_store.releaseUpdateLock(io, lock_path);
+    try cache_store.releaseUpdateLock(io, lock_path);
+}
+
+test "releaseUpdateLock counts a lock that is already gone as released" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var temporary = try files.TemporaryDir.create(io);
+    defer temporary.destroy();
+
+    //
+    // Another process clearing it as abandoned, or the user deleting it as the timeout message says
+    // to. Nothing is blocking anyone, which is all the release was for.
+    //
+    try cache_store.releaseUpdateLock(io, try temporary.join(allocator, "never-existed.lock"));
+}
+
+test "releaseUpdateLock says so when the lock file will not delete" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var temporary = try files.TemporaryDir.create(io);
+    defer temporary.destroy();
+
+    //
+    // A directory sitting where the lock file should be is the portable way to make a delete fail.
+    // What matters is that the failure comes back at all, not which error it is, since that differs
+    // by platform.
+    //
+    const lock_path = try temporary.join(allocator, "wedged.lock");
+    try files.makeDirPath(io, lock_path);
+
+    try testing.expect(std.meta.isError(cache_store.releaseUpdateLock(io, lock_path)));
 }
 
 test "clearAbandonedLock leaves a fresh lock alone" {
@@ -254,7 +296,7 @@ test "clearAbandonedLock leaves a fresh lock alone" {
     // A living writer must never be robbed of its lock, so a lock made a moment ago stays.
     //
     try testing.expect(files.fileExists(io, lock_path));
-    cache_store.releaseUpdateLock(io, lock_path);
+    try cache_store.releaseUpdateLock(io, lock_path);
 }
 
 test "clearAbandonedLock does not mind a lock that is already gone" {

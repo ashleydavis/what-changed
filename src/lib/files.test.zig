@@ -164,7 +164,7 @@ test "renameFile moves a file over whatever was there" {
     try testing.expect(!temporary.has("from.txt"));
 }
 
-test "removeFile deletes a file and does not mind a missing one" {
+test "removeFile deletes a file and reports a missing one" {
     var test_io = files.TestIo.init();
     defer test_io.deinit();
     const io = test_io.io();
@@ -177,10 +177,14 @@ test "removeFile deletes a file and does not mind a missing one" {
     defer temporary.destroy();
 
     try temporary.write("gone.txt", "x");
-    files.removeFile(io, try temporary.join(allocator, "gone.txt"));
+    try files.removeFile(io, try temporary.join(allocator, "gone.txt"));
     try testing.expect(!temporary.has("gone.txt"));
 
-    files.removeFile(io, try temporary.join(allocator, "never-existed.txt"));
+    //
+    // The caller decides what a missing file means. `clearAbandonedLock` shrugs at it and
+    // `releaseUpdateLock` counts it as released, and neither could if this swallowed it.
+    //
+    try testing.expectError(error.FileNotFound, files.removeFile(io, try temporary.join(allocator, "never-existed.txt")));
 }
 
 test "createFileExclusive lets exactly one caller win" {
@@ -204,7 +208,7 @@ test "createFileExclusive lets exactly one caller win" {
     //
     try testing.expectError(error.PathAlreadyExists, files.createFileExclusive(io, lock_path));
 
-    files.removeFile(io, lock_path);
+    try files.removeFile(io, lock_path);
     try files.createFileExclusive(io, lock_path);
 }
 
