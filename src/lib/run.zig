@@ -282,7 +282,7 @@ pub fn compareFileTree(context: *const Context, request: ReportRequest) failure.
     // to ignore would report every already-recorded file of that type as deleted.
     //
     const baseline_path = try files.resolvePath(allocator, tree.root_dir, tree.config.baseline_path);
-    const loaded = try baseline_store.loadBaseline(context.io, allocator, baseline_path);
+    const loaded = (try baseline_store.loadBaseline(context.io, allocator, baseline_path)).baseline;
     const baseline = try filterIgnoredBaseline(allocator, &loaded, tree.config.ignore);
 
     const format = try output_module.parseOutputFormat(request.options.output, context.fail);

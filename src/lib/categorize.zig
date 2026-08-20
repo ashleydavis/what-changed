@@ -89,8 +89,8 @@ pub fn watchedPathsFor(allocator: std.mem.Allocator, config: *const Config, targ
 // True when a file falls under a watched path.
 //
 // A watched path is either the file itself or a directory above it. The separator check is what
-// stops "src" matching "srcircus/a.ts": without it any path that merely starts with the same letters
-// would count, and a target would report changes it does not actually watch.
+// stops "src" matching "src-generated/a.ts": without it any path that merely starts with the same
+// letters would count, and a target would be reported for changes it does not watch.
 //
 pub fn isUnderWatchedPath(file_path: []const u8, watched_path: []const u8) bool {
     if (std.mem.eql(u8, file_path, watched_path)) return true;

@@ -70,10 +70,9 @@ test "isUnderWatchedPath matches the path itself and anything below it" {
 test "isUnderWatchedPath does not match a directory that merely starts with the same letters" {
     //
     // The bug the separator check exists for. Without it "src" would claim every file under
-    // "srcircus", and a target would report changes it does not watch.
+    // "src-generated", and a target would be reported for changes it does not watch.
     //
-    try testing.expect(!categorize.isUnderWatchedPath("srcircus/a.ts", "src"));
-    try testing.expect(!categorize.isUnderWatchedPath("src-other/a.ts", "src"));
+    try testing.expect(!categorize.isUnderWatchedPath("src-generated/a.ts", "src"));
     try testing.expect(!categorize.isUnderWatchedPath("source", "src"));
 }
 

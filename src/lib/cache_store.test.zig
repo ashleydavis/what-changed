@@ -42,11 +42,12 @@ test "readJsonObject reads an object off disk" {
     defer temporary.destroy();
     try temporary.write("data.json", "{\"a\": 1}");
 
-    const parsed = try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "data.json"));
-    try testing.expectEqual(@as(i64, 1), value.get(parsed, "a").?.integer);
+    const read = try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "data.json"));
+    try testing.expectEqual(@as(i64, 1), value.get(read.object, "a").?.integer);
+    try testing.expectEqualStrings("read", read.statusText());
 }
 
-test "readJsonObject treats a missing, damaged or wrongly typed file as empty" {
+test "readJsonObject says which way a file failed to give it an object" {
     var test_io = files.TestIo.init();
     defer test_io.deinit();
     const io = test_io.io();
@@ -61,10 +62,36 @@ test "readJsonObject treats a missing, damaged or wrongly typed file as empty" {
     try temporary.write("array.json", "[1, 2]");
     try temporary.write("scalar.json", "42");
 
-    try testing.expectEqual(@as(usize, 0), (try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "gone.json"))).object.count());
-    try testing.expectEqual(@as(usize, 0), (try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "broken.json"))).object.count());
-    try testing.expectEqual(@as(usize, 0), (try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "array.json"))).object.count());
-    try testing.expectEqual(@as(usize, 0), (try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "scalar.json"))).object.count());
+    //
+    // A file that is not there and a file that is there and unusable are different answers. Reading
+    // them as one empty object is what made a corrupted baseline indistinguishable from a project
+    // that had never captured one.
+    //
+    try testing.expectEqualStrings("absent", (try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "gone.json"))).statusText());
+    try testing.expectEqualStrings("notJson", (try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "broken.json"))).statusText());
+    try testing.expectEqualStrings("notAnObject", (try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "array.json"))).statusText());
+    try testing.expectEqualStrings("notAnObject", (try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "scalar.json"))).statusText());
+}
+
+test "contentOrNull hands back the object, and null for every way there was not one" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var temporary = try files.TemporaryDir.create(io);
+    defer temporary.destroy();
+    try temporary.write("data.json", "{\"a\": 1}");
+    try temporary.write("array.json", "[1, 2]");
+
+    const read = (try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "data.json"))).contentOrNull();
+    try testing.expectEqual(@as(i64, 1), value.get(read, "a").?.integer);
+
+    try testing.expectEqual(value.Value.null, (try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "gone.json"))).contentOrNull());
+    try testing.expectEqual(value.Value.null, (try cache_store.readJsonObject(io, allocator, try temporary.join(allocator, "array.json"))).contentOrNull());
 }
 
 test "loadCache reads the hashes back, and an absent cache is empty" {
@@ -263,7 +290,7 @@ test "updateJsonFile writes the result of the change" {
     var fail = failure.Failure.init(allocator);
     try cache_store.updateJsonFile(io, allocator, path, Value{ .object = replacement }, replaceWith, &fail);
 
-    const read_back = try cache_store.readJsonObject(io, allocator, path);
+    const read_back = (try cache_store.readJsonObject(io, allocator, path)).contentOrNull();
     try testing.expectEqual(true, value.get(read_back, "written").?.bool);
 }
 
@@ -288,7 +315,7 @@ test "updateJsonFile hands the current contents to the change" {
     // Both fields are there, which is the whole point: the second update read what the first wrote
     // rather than starting from nothing.
     //
-    const read_back = try cache_store.readJsonObject(io, allocator, path);
+    const read_back = (try cache_store.readJsonObject(io, allocator, path)).contentOrNull();
     try testing.expectEqual(true, value.get(read_back, "first").?.bool);
     try testing.expectEqual(true, value.get(read_back, "second").?.bool);
 }

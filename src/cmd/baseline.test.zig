@@ -39,6 +39,62 @@ test "baselineShowCommand says nothing is captured when nothing is" {
     try testing.expect(std.mem.indexOf(u8, scenario.printed(), "No target has been captured yet") != null);
 }
 
+test "baselineShowCommand says a damaged baseline is there rather than never captured" {
+    var scenario = try harness.Scenario.create();
+    defer scenario.destroy();
+
+    try scenario.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
+    try scenario.write(".what-changed/baseline.json", "{ not json");
+
+    const context = scenario.context();
+    try testing.expectEqual(@as(u8, 0), try baseline.baselineShowCommand(&context, .{}));
+
+    //
+    // The file is sitting right there, so saying nothing has ever been captured would send someone
+    // looking for a capture step that already ran.
+    //
+    try testing.expect(std.mem.indexOf(u8, scenario.printed(), "The file is there and is not valid JSON.") != null);
+    try testing.expect(std.mem.indexOf(u8, scenario.printed(), "No target has been captured yet") == null);
+}
+
+test "baselineShowCommand says a baseline holding the wrong kind of JSON is there" {
+    var scenario = try harness.Scenario.create();
+    defer scenario.destroy();
+
+    try scenario.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
+    try scenario.write(".what-changed/baseline.json", "[1, 2]");
+
+    const context = scenario.context();
+    _ = try baseline.baselineShowCommand(&context, .{});
+    try testing.expect(std.mem.indexOf(u8, scenario.printed(), "The file is there and does not hold a JSON object.") != null);
+}
+
+test "baselineShowCommand reports the file's status in json" {
+    var scenario = try harness.Scenario.create();
+    defer scenario.destroy();
+
+    try scenario.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
+    try scenario.write(".what-changed/baseline.json", "{ not json");
+
+    const context = scenario.context();
+    _ = try baseline.baselineShowCommand(&context, .{ .output = "json" });
+    try testing.expect(std.mem.indexOf(u8, scenario.printed(), "\"status\": \"notJson\"") != null);
+
+    scenario.clear();
+
+    //
+    // A project that has captured nothing reports "absent", so a script can tell the two apart the
+    // same way the text output does.
+    //
+    var fresh = try harness.Scenario.create();
+    defer fresh.destroy();
+    try fresh.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
+
+    const fresh_context = fresh.context();
+    _ = try baseline.baselineShowCommand(&fresh_context, .{ .output = "json" });
+    try testing.expect(std.mem.indexOf(u8, fresh.printed(), "\"status\": \"absent\"") != null);
+}
+
 test "baselineShowCommand counts each captured target, in name order" {
     var scenario = try harness.Scenario.create();
     defer scenario.destroy();

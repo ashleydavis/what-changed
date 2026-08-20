@@ -35,26 +35,89 @@ pub const Cache = struct {
 //
 pub fn loadCache(io: std.Io, allocator: std.mem.Allocator, cache_dir: []const u8) std.mem.Allocator.Error!Cache {
     const path = try files.joinPath(allocator, &.{ cache_dir, FILE_HASHES_NAME });
-    return .{ .file_hashes = try file_hash.cacheFromValue(allocator, try readJsonObject(io, allocator, path)) };
+    return .{ .file_hashes = try file_hash.cacheFromValue(allocator, (try readJsonObject(io, allocator, path)).contentOrNull()) };
 }
 
 //
-// Reads a JSON object from a file, returning an empty object for anything that is not a readable,
-// parseable, plain JSON object.
+// What came of reading a JSON object out of a file.
 //
-pub fn readJsonObject(io: std.Io, allocator: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error!Value {
-    const text = files.readFile(io, allocator, path) catch {
-        return .{ .object = value.newObject(allocator) };
+// The four ways there is no object are kept apart rather than collapsed into an empty one. They are
+// not the same news: a file that is not there has never been written, and a file that is there and
+// unusable is a problem someone has to go and look at. Reporting the second as the first is how
+// `baseline show` came to say "no target has been captured yet" about a file sitting in front of it.
+//
+// A caller that genuinely treats all four alike says so with `contentOrNull`.
+//
+pub const JsonObjectFile = union(enum) {
+    //
+    // The file held a JSON object, which is here.
+    //
+    object: Value,
+
+    //
+    // There is no file at that path.
+    //
+    absent,
+
+    //
+    // The file is there and could not be read, with the error that stopped it.
+    //
+    unreadable: anyerror,
+
+    //
+    // The file is there and its content will not parse as JSON.
+    //
+    not_json,
+
+    //
+    // The file is there and holds valid JSON that is not an object: an array, a number, a string.
+    //
+    not_an_object,
+
+    //
+    // The object that was read, or `.null` for every way there was not one.
+    //
+    // For a caller that treats all four failures alike. Everything that reads one of these values
+    // already treats anything that is not an object as empty, so `.null` needs no branch of its own.
+    //
+    pub fn contentOrNull(self: JsonObjectFile) Value {
+        return switch (self) {
+            .object => |object| object,
+            else => .null,
+        };
+    }
+
+    //
+    // The name the machine-readable output uses for this outcome.
+    //
+    // Spelled out here rather than taken from the tag, because these names are part of what a script
+    // reads and renaming a tag must not change them.
+    //
+    pub fn statusText(self: JsonObjectFile) []const u8 {
+        return switch (self) {
+            .object => "read",
+            .absent => "absent",
+            .unreadable => "unreadable",
+            .not_json => "notJson",
+            .not_an_object => "notAnObject",
+        };
+    }
+};
+
+//
+// Reads a JSON object from a file, saying which of the four ways it failed when it did.
+//
+pub fn readJsonObject(io: std.Io, allocator: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error!JsonObjectFile {
+    const text = files.readFile(io, allocator, path) catch |err| {
+        return if (err == error.FileNotFound) .absent else .{ .unreadable = err };
     };
 
-    const parsed = json.parse(allocator, text) catch {
-        return .{ .object = value.newObject(allocator) };
-    };
+    const parsed = json.parse(allocator, text) catch return .not_json;
 
     if (!value.isPlainObject(parsed)) {
-        return .{ .object = value.newObject(allocator) };
+        return .not_an_object;
     }
-    return parsed;
+    return .{ .object = parsed };
 }
 
 //
@@ -195,7 +258,7 @@ pub fn updateJsonFile(
     //
     defer releaseUpdateLock(io, lock_path);
 
-    const current = try readJsonObject(io, allocator, path);
+    const current = (try readJsonObject(io, allocator, path)).contentOrNull();
     writeJsonFile(io, allocator, path, try mutate(context, allocator, current)) catch |err| {
         return fail.set("Failed to write \"{s}\": {s}", .{ path, files.describeError(err) });
     };

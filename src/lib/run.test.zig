@@ -463,7 +463,7 @@ test "runBaseline captures every target when none is named" {
     try testing.expectEqual(@as(u8, 0), try run.runBaseline(&context, .{}, &.{}));
     try testing.expectEqualStrings("Captured the baseline for 2 target(s): unit, documentation.\n", harness.printed());
 
-    var baseline = try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"));
+    var baseline = (try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"))).baseline;
     try testing.expectEqual(@as(usize, 2), baseline.targets.count());
 }
 
@@ -519,7 +519,7 @@ test "runBaseline records nothing at all when one of the names is unknown" {
     // Refused as a whole rather than partly applied. A capture that recorded "unit" and then failed
     // would leave the caller believing nothing had been recorded when something had.
     //
-    var baseline = try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"));
+    var baseline = (try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"))).baseline;
     try testing.expectEqual(@as(usize, 0), baseline.targets.count());
 }
 
@@ -536,7 +536,7 @@ test "runBaseline records only what each target watches" {
 
     _ = try run.runBaseline(&context, .{}, &.{});
 
-    var baseline = try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"));
+    var baseline = (try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"))).baseline;
     try testing.expectEqual(@as(usize, 1), baseline.targets.get("unit").?.count());
     try testing.expect(baseline.targets.get("unit").?.get("stray/x.ts") == null);
 

@@ -173,7 +173,7 @@ test "loadBaseline reads what saveBaseline wrote" {
     };
     try baseline_store.saveBaseline(io, allocator, path, &baseline);
 
-    var loaded = try baseline_store.loadBaseline(io, allocator, path);
+    var loaded = (try baseline_store.loadBaseline(io, allocator, path)).baseline;
     try testing.expectEqualStrings("1", loaded.targets.get("unit").?.get("src/a.ts").?);
 }
 
@@ -190,11 +190,18 @@ test "loadBaseline of a missing or damaged file is an empty baseline" {
     defer temporary.destroy();
     try temporary.write("damaged.json", "{ not json");
 
-    var missing = try baseline_store.loadBaseline(io, allocator, try temporary.join(allocator, "gone.json"));
-    try testing.expectEqual(@as(usize, 0), missing.targets.count());
+    const missing = try baseline_store.loadBaseline(io, allocator, try temporary.join(allocator, "gone.json"));
+    try testing.expectEqual(@as(usize, 0), missing.baseline.targets.count());
 
-    var damaged = try baseline_store.loadBaseline(io, allocator, try temporary.join(allocator, "damaged.json"));
-    try testing.expectEqual(@as(usize, 0), damaged.targets.count());
+    const damaged = try baseline_store.loadBaseline(io, allocator, try temporary.join(allocator, "damaged.json"));
+    try testing.expectEqual(@as(usize, 0), damaged.baseline.targets.count());
+
+    //
+    // Both empty, and the caller can still tell them apart. That is the difference between "nothing
+    // has been captured" and "something was captured and the file holding it is broken".
+    //
+    try testing.expectEqualStrings("absent", missing.source.statusText());
+    try testing.expectEqualStrings("notJson", damaged.source.statusText());
 }
 
 test "captureTargets records a target without touching the others" {
@@ -222,7 +229,7 @@ test "captureTargets records a target without touching the others" {
     // Both are there. The second capture read what the first wrote and added to it, which is what
     // stops one target's capture erasing another's.
     //
-    var loaded = try baseline_store.loadBaseline(io, allocator, path);
+    var loaded = (try baseline_store.loadBaseline(io, allocator, path)).baseline;
     try testing.expectEqual(@as(usize, 2), loaded.targets.count());
     try testing.expectEqualStrings("1", loaded.targets.get("unit").?.get("src/a.ts").?);
     try testing.expectEqualStrings("2", loaded.targets.get("docs").?.get("docs/g.md").?);
@@ -249,7 +256,7 @@ test "captureTargets replaces a target's record when it is captured again" {
     const after = try baselinesFor(allocator, &.{.{ "unit", &.{.{ "src/a.ts", "changed" }} }});
     try baseline_store.captureTargets(io, allocator, path, &after, .empty, &fail);
 
-    var loaded = try baseline_store.loadBaseline(io, allocator, path);
+    var loaded = (try baseline_store.loadBaseline(io, allocator, path)).baseline;
     try testing.expectEqual(@as(usize, 1), loaded.targets.get("unit").?.count());
     try testing.expectEqualStrings("changed", loaded.targets.get("unit").?.get("src/a.ts").?);
 }
@@ -276,7 +283,7 @@ test "baselineReset writes an empty baseline rather than deleting the file" {
     try baseline_store.baselineReset(io, allocator, path);
 
     try testing.expect(files.fileExists(io, path));
-    var loaded = try baseline_store.loadBaseline(io, allocator, path);
+    var loaded = (try baseline_store.loadBaseline(io, allocator, path)).baseline;
     try testing.expectEqual(@as(usize, 0), loaded.targets.count());
     try testing.expectEqual(@as(usize, 0), loaded.files.count());
 }

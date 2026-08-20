@@ -51,16 +51,36 @@ pub const Baseline = struct {
 //
 
 //
+// A baseline, and how the file it came from read.
+//
+pub const LoadedBaseline = struct {
+    //
+    // What was recorded. Empty whenever there was nothing usable to read.
+    //
+    baseline: Baseline,
+
+    //
+    // Whether the file was read, was not there, or was there and unusable.
+    //
+    // Carried so a caller can tell "never captured" from "captured and now unreadable". Both leave
+    // the baseline empty and both mean everything counts as changed, but only one of them is
+    // something to go and fix, and `baseline show` should not describe it as the other.
+    //
+    source: cache_store.JsonObjectFile,
+};
+
+//
 // Loads the baseline. A missing file, or JSON that will not parse or is not a plain object, reads as
 // no baseline at all rather than as an error, so a damaged file costs a full report and never a
-// crash.
+// crash. Which of those it was comes back in `source`.
 //
 // A file written by an older version, which held a flat path-to-hash map rather than this structure,
 // also reads as no baseline. Everything then counts as changed, which is the safe direction: the
 // first run after an upgrade does the work rather than skipping it.
 //
-pub fn loadBaseline(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8) std.mem.Allocator.Error!Baseline {
-    return toBaseline(allocator, try cache_store.readJsonObject(io, allocator, baseline_path));
+pub fn loadBaseline(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8) std.mem.Allocator.Error!LoadedBaseline {
+    const source = try cache_store.readJsonObject(io, allocator, baseline_path);
+    return .{ .baseline = try toBaseline(allocator, source.contentOrNull()), .source = source };
 }
 
 //

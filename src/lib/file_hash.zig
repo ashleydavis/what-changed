@@ -108,9 +108,10 @@ pub fn hashFile(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, 
 // Sorts an error that stopped a file being hashed into the file having gone or the file being
 // unreadable.
 //
-// FileNotFound is the only one that means the file is not there. Everything else, a permission
-// problem above all, means the entry is still in the tree and something stopped this process reading
-// it, which is worth saying out loud rather than passing off as a deletion.
+// FileNotFound is the only one that means the file is not there. Everything else, from a permission
+// denied to a symlink loop to an I/O error, means the entry is still in the tree and something
+// stopped this process reading it, which is worth saying out loud rather than passing off as a
+// deletion.
 //
 fn whyNot(err: anyerror) HashedFile {
     return if (err == error.FileNotFound) .gone else .{ .unreadable = err };

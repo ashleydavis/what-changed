@@ -53,7 +53,8 @@ pub fn baselineShowCommand(context: *const Context, options: ReportOptions) wc.f
     const allocator = context.allocator;
 
     const baseline_path = try resolveBaselinePath(context, options);
-    var baseline = try wc.baseline_store.loadBaseline(context.io, allocator, baseline_path);
+    const loaded = try wc.baseline_store.loadBaseline(context.io, allocator, baseline_path);
+    var baseline = loaded.baseline;
     const format = try wc.output.parseOutputFormat(options.output, context.fail);
 
     const target_names = try allocator.dupe([]const u8, baseline.targets.keys());
@@ -70,12 +71,24 @@ pub fn baselineShowCommand(context: *const Context, options: ReportOptions) wc.f
 
         var object = wc.value.newObject(allocator);
         try object.put(allocator, "baselinePath", wc.value.str(baseline_path));
+        try object.put(allocator, "status", wc.value.str(loaded.source.statusText()));
         try object.put(allocator, "targets", .{ .array = targets });
         try wc.output.printStructured(allocator, context.out, .{ .object = object }, format);
         return 0;
     }
 
     context.out.line("Baseline file: {s}", .{baseline_path});
+
+    //
+    // Said before anything about targets, because it explains why there are none to report. Without
+    // it a file that is sitting right there and cannot be used reads exactly like one that was never
+    // written, which is the one thing this command exists to tell apart.
+    //
+    if (describeUnusable(loaded.source)) |problem| {
+        context.out.line("{s} Everything counts as changed until it is fixed or reset.", .{problem});
+        return 0;
+    }
+
     if (target_names.len == 0) {
         context.out.line("No target has been captured yet, so everything counts as changed.", .{});
         return 0;
@@ -90,6 +103,22 @@ pub fn baselineShowCommand(context: *const Context, options: ReportOptions) wc.f
         context.out.line("  {s}: {d} file(s)", .{ name, baseline.targets.get(name).?.count() });
     }
     return 0;
+}
+
+//
+// Says what is wrong with a baseline file that is there and cannot be used, or null when there is
+// nothing wrong with it.
+//
+// A file that is absent is not a problem: it is a project that has not captured anything yet, which
+// the caller has its own sentence for.
+//
+fn describeUnusable(source: wc.cache_store.JsonObjectFile) ?[]const u8 {
+    return switch (source) {
+        .object, .absent => null,
+        .unreadable => "The file is there and could not be read.",
+        .not_json => "The file is there and is not valid JSON.",
+        .not_an_object => "The file is there and does not hold a JSON object.",
+    };
 }
 
 //
