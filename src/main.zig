@@ -6,6 +6,7 @@ const commander = wc.commander;
 const baseline_cmd = @import("cmd/baseline.zig");
 const cache_cmd = @import("cmd/cache.zig");
 const changes_cmd = @import("cmd/changes.zig");
+const init_cmd = @import("cmd/init.zig");
 const summary_cmd = @import("cmd/summary.zig");
 const targets_cmd = @import("cmd/targets.zig");
 const version_cmd = @import("cmd/version.zig");
@@ -29,6 +30,7 @@ const Context = wc.run.Context;
 const HELP_EXAMPLES =
     \\
     \\Examples:
+    \\  what-changed init                Write a starter config and ignore .what-changed/
     \\  what-changed summary             Show the changed files, grouped by target
     \\  what-changed changes             Show the changed files as a flat list
     \\  what-changed targets             Print the affected target names, one per line
@@ -62,6 +64,11 @@ pub fn buildProgram(context: *const Context) *commander.Command {
         .addHelpText("after", HELP_EXAMPLES)
         .enablePositionalOptions(); // An option after a subcommand name belongs to that subcommand.
 
+    //
+    // First, because it is the first thing a new project runs: everything below it needs a config,
+    // and this is what writes one.
+    //
+    program.addCommand(init_cmd.buildInitCommand(context));
     program.addCommand(summary_cmd.buildSummaryCommand(context));
     program.addCommand(changes_cmd.buildChangesCommand(context));
     program.addCommand(targets_cmd.buildTargetsCommand(context));

@@ -84,13 +84,21 @@ chmod +x what-changed
 
 ## Getting started
 
-1. Write a config at the root of your project. YAML and JSON both work. [examples/configs/](examples/configs/) has examples of both formats, and [examples/example-project/](examples/example-project/) is a small working project with the whole thing wired up.
+1. Set the project up from its root:
+
+   ```bash
+   what-changed init
+   ```
+
+   That writes a starter `what-changed.yaml` and adds `.what-changed/` to your `.gitignore`. Neither is overwritten: a config that is already there is left exactly as it is, and so is a `.gitignore` that already ignores `.what-changed/`.
+
+2. Edit the targets in the config it wrote. It cannot know what your project builds, so the two it writes are placeholders. A target names a build or test step and the paths whose content decides whether that step has to run again.
 
    ```yaml
    always:
      - package.json
      - package-lock.json
-     
+
    ignore:
      - .md
      - .txt
@@ -107,11 +115,7 @@ chmod +x what-changed
          - test
    ```
 
-2. Add one line to your `.gitignore`:
-
-   ```
-   .what-changed/
-   ```
+   YAML and JSON both work. [examples/configs/](examples/configs/) has examples of both formats, and [examples/example-project/](examples/example-project/) is a small working project with the whole thing wired up.
 
 3. Ask what changed:
 
@@ -140,6 +144,7 @@ chmod +x what-changed
 | Command | What it does |
 | --- | --- |
 | `what-changed` | Prints the usage text |
+| `what-changed init` | Write a starter config and add `.what-changed/` to `.gitignore`. Neither is overwritten |
 | `what-changed summary` | The changed files, grouped under the targets they fall under |
 | `what-changed changes` | The changed files as a flat list |
 | `what-changed targets` | Just the affected target names, one per line, for a script to read |
@@ -152,7 +157,7 @@ chmod +x what-changed
 | `what-changed cache show` | Where the cache is and how much is in it |
 | `what-changed version` | The version, and the commit and date it was built from. Also `-v` / `--version` |
 
-Every subcommand takes `--config <path>`. Without it the tool looks for `what-changed.yaml`, then `.yml`, then `.json` and uses the first it finds.
+Every subcommand that reads a config takes `--config <path>`. Without it the tool looks for `what-changed.yaml`, then `.yml`, then `.json` and uses the first it finds. `init` and `version` take no `--config`: neither of them reads one.
 
 ### Output formats
 

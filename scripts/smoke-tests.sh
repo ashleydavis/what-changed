@@ -6,7 +6,7 @@
 # the unit tests cannot reach: they call run directly and see a return value or an exception,
 # where this sees what the shell sees.
 #
-# Scenarios 1 to 7 run outside any git repository. Scenarios 8 onwards run against a throwaway
+# Scenarios 1 to 10 run outside any git repository. Scenarios 11 onwards run against a throwaway
 # repository created by the single `git init` documented in the banner further down. Read that banner
 # before adding any git command here.
 
@@ -94,6 +94,40 @@ run_cli() {
     set -e
 }
 
+# Runs the CLI from a directory the scenario chose, capturing its exit code and its output.
+#
+# `init` writes into the directory it is run from, so its scenarios need one each rather than the
+# shared throwaway directory, which by then holds the configs the scenarios above wrote.
+run_cli_in() {
+    local directory="$1"
+    shift
+    set +e
+    (cd "$directory" && "${RUN_CLI[@]}" "$@") > "$OUTPUT_FILE" 2>&1
+    LAST_EXIT=$?
+    set -e
+}
+
+# Asserts a file is there.
+assert_file_exists() {
+    local path="$1"
+    if [ -f "$path" ]; then
+        pass "$path exists"
+    else
+        fail "expected $path to exist"
+    fi
+}
+
+# Asserts a file on disk contains the given text, which is not the same as the CLI printing it.
+assert_file_contains() {
+    local path="$1"
+    local expected="$2"
+    if [ -f "$path" ] && grep -qF -- "$expected" "$path"; then
+        pass "$path contains \"$expected\""
+    else
+        fail "expected $path to contain \"$expected\""
+    fi
+}
+
 # Asserts the CLI exited with the expected code.
 assert_exit() {
     local expected="$1"
@@ -157,6 +191,7 @@ CONFIG
 scenario "1. --help prints the usage text and lists the subcommands"
 run_cli --help
 assert_exit 0
+assert_output_contains "init"
 assert_output_contains "summary"
 assert_output_contains "changes"
 assert_output_contains "targets"
@@ -237,6 +272,40 @@ write_config
 run_cli summary
 assert_failed
 assert_output_contains "git ls-files failed"
+
+scenario "10b. init sets an empty project up: a config to edit and .what-changed/ ignored"
+INIT_DIR="$WORK_DIR/init-project"
+mkdir -p "$INIT_DIR"
+run_cli_in "$INIT_DIR" init
+assert_exit 0
+assert_output_contains "what-changed.yaml"
+assert_output_contains ".gitignore"
+assert_file_exists "$INIT_DIR/what-changed.yaml"
+assert_file_exists "$INIT_DIR/.gitignore"
+#
+# The line people forget when they set the tool up by hand. Without it the tool lists its own files
+# as untracked changes, so every target looks affected on every run.
+#
+assert_file_contains "$INIT_DIR/.gitignore" ".what-changed/"
+
+scenario "10c. init on a project that is already set up succeeds and says so"
+run_cli_in "$INIT_DIR" init
+assert_exit 0
+assert_output_contains "already has a what-changed config"
+assert_output_contains "already ignores"
+
+scenario "10d. init never overwrites a config someone has already tuned"
+INIT_EXISTING_DIR="$WORK_DIR/init-existing"
+mkdir -p "$INIT_EXISTING_DIR"
+printf 'targets:\n  - name: recognisable\n    paths:\n      - src\n' > "$INIT_EXISTING_DIR/what-changed.yaml"
+run_cli_in "$INIT_EXISTING_DIR" init
+assert_exit 0
+assert_file_contains "$INIT_EXISTING_DIR/what-changed.yaml" "recognisable"
+#
+# The half that was missing is still done: a project with a config and no ignore line is exactly the
+# project that needs this command.
+#
+assert_file_contains "$INIT_EXISTING_DIR/.gitignore" ".what-changed/"
 
 ####################################################################################################
 #
