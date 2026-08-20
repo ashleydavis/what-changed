@@ -1,6 +1,6 @@
 # Development
 
-How to build `what-changed` from source and run its tests. For what the tool does and how to use it, see the [README](../README.md). For the internals, see [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
+How to build `what-changed` from source and run its tests. For what the tool does and how to use it, see the [README](../README.md). For the ideas behind it, see [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
 ## Build it from source
 
@@ -42,8 +42,6 @@ zig build perf                        # benchmarks, fails if a stage blows its b
 ```
 
 [`scripts/smoke-tests.sh`](../scripts/smoke-tests.sh) drives the compiled executable rather than the source, which is why it is run with `--binary`: what ships gets tested rather than trusted.
-
-**No test creates or modifies a git repository except one `git init` on a fresh `mktemp -d`.** A banner in [`scripts/smoke-tests.sh`](../scripts/smoke-tests.sh) explains why that one is safe. Read it before adding any git command there.
 
 ## Performance
 

@@ -58,7 +58,7 @@ Changed since the baseline:
 
 Note two things in that output. A file lands under every target that watches it, so one change can affect several targets. A changed file that **no** target watches is listed separately, because that is usually a gap in the config.
 
-For the internals see [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). For what it costs, see [docs/performance.md](docs/performance.md). To build it yourself, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+For how it decides what changed, and why the recorded state is arranged the way it is, see [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). For what it costs, see [docs/performance.md](docs/performance.md). To build it yourself, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Install
 
@@ -322,7 +322,7 @@ Examples in this repo:
 | `targets[].paths` | Repository-relative files or directories. Required, must not be empty. |
 | `targets[].platforms` | Platform names this target can run on: `linux`, `darwin`, `win32`. Defaults to every platform. See [Platform filtering](#platform-filtering). |
 
-Paths in the config file are relative to the directory thaaat contains the config file.
+Paths in the config file are relative to the directory that contains the config file.
 
 ## Platform filtering
 

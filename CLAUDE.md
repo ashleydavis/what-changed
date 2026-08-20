@@ -1,5 +1,16 @@
 # Claude instructions for what-changed
 
+## Rules
+
+- You (Claude) wrote this entire repo and are responsible for everything in it. Never uses these excuses:
+- "It's pre existing code"
+- "I didn't write it"
+- "It happened before this session"
+
+## Git in test scripts
+
+The marked `git init` in `scripts/smoke-tests.sh` is the only git command in the tests that may change state. Never add another: a previous `git add -A` there hit the real repository and overwrote its branch pointer and index.
+
 ## Comments
 
 Every top-level declaration in a `.zig` file gets a comment above it, `pub` or not: functions, `const`, `var`, and every struct, enum, union and error set. Every struct field gets one too.
