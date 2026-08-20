@@ -25,8 +25,10 @@ var file_list: []const []const u8 = &.{};
 
 //
 // Answers with whatever the scenario last wrote, in place of asking git.
+// Public only so the tests in harness.test.zig can reach it. Nothing else calls it.
 //
-fn listFromScenario(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) wc.failure.Error![][]const u8 {
+//
+pub fn listFromScenario(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) wc.failure.Error![][]const u8 {
     _ = io;
     _ = environ;
     _ = root_dir;
@@ -158,48 +160,10 @@ pub const Scenario = struct {
     }
 };
 
-const testing = std.testing;
-
-test "a scenario gives each test its own empty project" {
-    var scenario = try Scenario.create();
-    defer scenario.destroy();
-
-    try testing.expectEqualStrings("", scenario.printed());
-    try testing.expect(!scenario.temporary.has("what-changed.yaml"));
-}
-
-test "project writes the config and the files, and the lister reports them" {
-    var scenario = try Scenario.create();
-    defer scenario.destroy();
-
-    try scenario.project("targets:\n  - name: unit\n    paths:\n      - src\n", &.{ .{ "src/a.ts", "one" }, .{ "src/b.ts", "two" } });
-
-    try testing.expect(scenario.temporary.has("what-changed.yaml"));
-    try testing.expect(scenario.temporary.has("src/a.ts"));
-
-    var fail = Failure.init(scenario.allocator());
-    const listed = try listFromScenario(scenario.io(), &scenario.environ, scenario.allocator(), scenario.temporary.path, &fail);
-    try testing.expectEqual(@as(usize, 2), listed.len);
-    try testing.expectEqualStrings("src/a.ts", listed[0]);
-}
-
-test "clear forgets what was printed" {
-    var scenario = try Scenario.create();
-    defer scenario.destroy();
-
-    scenario.out.line("something", .{});
-    try testing.expectEqualStrings("something\n", scenario.printed());
-
-    scenario.clear();
-    try testing.expectEqualStrings("", scenario.printed());
-}
-
-test "the context points at the throwaway project" {
-    var scenario = try Scenario.create();
-    defer scenario.destroy();
-
-    const context = scenario.context();
-    try testing.expectEqualStrings(scenario.temporary.path, context.cwd);
-    try testing.expectEqualStrings("linux", context.platform);
-    try testing.expectEqualStrings("darwin", scenario.contextOn("darwin").platform);
+test {
+    //
+    // The tests live in their own file so a change to them is never mistaken for a change
+    // to the code. Nothing else imports that file, so naming it here is what runs it.
+    //
+    _ = @import("harness.test.zig");
 }

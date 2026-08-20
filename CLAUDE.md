@@ -35,6 +35,8 @@ Call through the module, `file_hash.hashFile(...)` rather than a bare `hashFile(
 
 Tests only reach `pub` declarations. Where a test needs something private, make it `pub` and say in its comment that the tests are why, as `READ_BUFFER_BYTES` does. Never copy the value into the test file: a copy keeps passing after the original changes.
 
+Fixtures live in the test file that owns them and other test files import it, as `file_hashes.test.zig` exports `fromPairs`. Never put a fixture in a code file.
+
 ## Done means
 
 `zig build test`, `./scripts/smoke-tests.sh --binary` and `zig build perf` all pass. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).

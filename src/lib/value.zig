@@ -113,68 +113,10 @@ pub fn describe(allocator: std.mem.Allocator, value: ?Value) std.mem.Allocator.E
     return rendered.toOwnedSlice();
 }
 
-const testing = std.testing;
-
-test "newObject and newArray start empty" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    try testing.expectEqual(@as(usize, 0), newObject(allocator).count());
-    try testing.expectEqual(@as(usize, 0), newArray(allocator).items.len);
-}
-
-test "str, boolean and int wrap their values" {
-    try testing.expectEqualStrings("hello", str("hello").string);
-    try testing.expectEqual(true, boolean(true).bool);
-    try testing.expectEqual(@as(i64, 7), int(7).integer);
-}
-
-test "get reads a field off an object" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    var object = newObject(allocator);
-    try object.put(allocator, "name", str("alpha"));
-    const value = Value{ .object = object };
-
-    try testing.expectEqualStrings("alpha", get(value, "name").?.string);
-    try testing.expect(get(value, "missing") == null);
-}
-
-test "get answers null for anything that is not an object" {
-    try testing.expect(get(str("text"), "name") == null);
-    try testing.expect(get(.null, "name") == null);
-    try testing.expect(get(int(1), "name") == null);
-}
-
-test "isPlainObject accepts objects and rejects everything else" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    try testing.expect(isPlainObject(.{ .object = newObject(allocator) }));
-    try testing.expect(!isPlainObject(.{ .array = newArray(allocator) }));
-    try testing.expect(!isPlainObject(.null));
-    try testing.expect(!isPlainObject(str("text")));
-    try testing.expect(!isPlainObject(int(3)));
-}
-
-test "describe renders values compactly, for dropping into a message" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    try testing.expectEqualStrings("undefined", try describe(allocator, null));
-    try testing.expectEqualStrings("null", try describe(allocator, .null));
-    try testing.expectEqualStrings("\"alpha\"", try describe(allocator, str("alpha")));
-    try testing.expectEqualStrings("7", try describe(allocator, int(7)));
-    try testing.expectEqualStrings("true", try describe(allocator, boolean(true)));
-    try testing.expectEqualStrings("[]", try describe(allocator, .{ .array = newArray(allocator) }));
-
-    var array = newArray(allocator);
-    try array.append(int(1));
-    try array.append(str("two"));
-    try testing.expectEqualStrings("[1,\"two\"]", try describe(allocator, .{ .array = array }));
+test {
+    //
+    // The tests live in their own file so a change to them is never mistaken for a change
+    // to the code. Nothing else imports that file, so naming it here is what runs it.
+    //
+    _ = @import("value.test.zig");
 }

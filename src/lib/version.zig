@@ -1,5 +1,3 @@
-const std = @import("std");
-
 //
 // Which build this is.
 //
@@ -41,17 +39,10 @@ pub const build_metadata = BuildMetadata{
     .is_pre_release = false,
 };
 
-const testing = std.testing;
-
-//
-// These check that the values reach the code, not what they are. Asserting "dev" would fail on
-// exactly the builds that ship, since the release workflow rewrites this file before compiling.
-//
-test "the version is a non-empty string" {
-    try testing.expect(version.len > 0);
-}
-
-test "the build metadata is filled in" {
-    try testing.expect(build_metadata.commit_hash.len > 0);
-    try testing.expect(build_metadata.build_date.len > 0);
+test {
+    //
+    // The tests live in their own file so a change to them is never mistaken for a change
+    // to the code. Nothing else imports that file, so naming it here is what runs it.
+    //
+    _ = @import("version.test.zig");
 }

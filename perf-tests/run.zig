@@ -17,8 +17,10 @@ const TREE_SIZES = [_]usize{ 100, 1000, 5000, 20000 };
 //
 // Bytes written into each generated file. Small on purpose: this measures the tool's own cost, and a
 // large payload would only measure the filesystem's read throughput.
+// Public only so the tests in run.test.zig can reach it. Nothing else calls it.
 //
-const FILE_SIZE_BYTES = 512;
+//
+pub const FILE_SIZE_BYTES = 512;
 
 //
 // The slowest a single warm check is allowed to be, in milliseconds per file. A warm check is one
@@ -52,13 +54,17 @@ const BenchmarkResult = struct {
 
 //
 // Every result gathered so far, printed as one table at the end.
+// Public only so the tests in run.test.zig can reach it. Nothing else calls it.
 //
-var results: std.ArrayList(BenchmarkResult) = .empty;
+//
+pub var results: std.ArrayList(BenchmarkResult) = .empty;
 
 //
 // Where the benchmark's own output goes.
+// Public only so the tests in run.test.zig can reach it. Nothing else calls it.
 //
-var out: wc.output.Output = undefined;
+//
+pub var out: wc.output.Output = undefined;
 
 //
 // Starts a measurement.
@@ -66,15 +72,19 @@ var out: wc.output.Output = undefined;
 // The "awake" clock, which counts forwards while the machine is running and is not affected by the
 // system clock being adjusted. Measuring against the wall clock would report a negative duration
 // the moment NTP nudged it mid-run.
+// Public only so the tests in run.test.zig can reach it. Nothing else calls it.
 //
-fn start(io: std.Io) i96 {
+//
+pub fn start(io: std.Io) i96 {
     return std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
 }
 
 //
 // Finishes a measurement, in milliseconds.
+// Public only so the tests in run.test.zig can reach it. Nothing else calls it.
 //
-fn elapsedMs(io: std.Io, from: i96) f64 {
+//
+pub fn elapsedMs(io: std.Io, from: i96) f64 {
     const now = std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
     return @as(f64, @floatFromInt(now - from)) / std.time.ns_per_ms;
 }
@@ -90,8 +100,10 @@ fn record(allocator: std.mem.Allocator, name: []const u8, file_count: usize, mil
 //
 // Writes a tree of files spread across directories, laid out like a real project rather than one
 // flat directory, and returns their relative paths.
+// Public only so the tests in run.test.zig can reach it. Nothing else calls it.
 //
-fn buildFileTree(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, file_count: usize) ![][]const u8 {
+//
+pub fn buildFileTree(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, file_count: usize) ![][]const u8 {
     const files_per_directory = 50;
     const directory_count = (file_count + files_per_directory - 1) / files_per_directory;
 
@@ -125,8 +137,10 @@ fn buildFileTree(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8,
 //
 // Measures the stages that decide how long a check takes: hashing with a cold cache, hashing with a
 // warm one, and the changed-file diff.
+// Public only so the tests in run.test.zig can reach it. Nothing else calls it.
 //
-fn benchmarkSize(io: std.Io, allocator: std.mem.Allocator, file_count: usize) !bool {
+//
+pub fn benchmarkSize(io: std.Io, allocator: std.mem.Allocator, file_count: usize) !bool {
     var temporary = try wc.files.TemporaryDir.create(io);
     defer temporary.destroy();
 
@@ -168,8 +182,10 @@ fn benchmarkSize(io: std.Io, allocator: std.mem.Allocator, file_count: usize) !b
 
 //
 // Every distinct stage name, in the order they were first measured.
+// Public only so the tests in run.test.zig can reach it. Nothing else calls it.
 //
-fn stageNames(allocator: std.mem.Allocator) ![][]const u8 {
+//
+pub fn stageNames(allocator: std.mem.Allocator) ![][]const u8 {
     var names: std.StringArrayHashMapUnmanaged(void) = .empty;
     for (results.items) |result| {
         try names.put(allocator, result.name, {});
@@ -179,8 +195,10 @@ fn stageNames(allocator: std.mem.Allocator) ![][]const u8 {
 
 //
 // The measurement for one stage at one size, or null when there is none.
+// Public only so the tests in run.test.zig can reach it. Nothing else calls it.
 //
-fn measurementFor(name: []const u8, file_count: usize) ?f64 {
+//
+pub fn measurementFor(name: []const u8, file_count: usize) ?f64 {
     for (results.items) |result| {
         if (result.file_count == file_count and std.mem.eql(u8, result.name, name)) {
             return result.milliseconds;
@@ -278,136 +296,10 @@ pub fn main(init: std.process.Init) !u8 {
     return 0;
 }
 
-const testing = std.testing;
-
-test "buildFileTree writes the requested number of files, spread across directories" {
-    var test_io = wc.files.TestIo.init();
-    defer test_io.deinit();
-    const io = test_io.io();
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    var temporary = try wc.files.TemporaryDir.create(io);
-    defer temporary.destroy();
-
-    const paths = try buildFileTree(io, allocator, temporary.path, 120);
-
-    try testing.expectEqual(@as(usize, 120), paths.len);
-    try testing.expectEqualStrings("packages/package-0/src/file-0.ts", paths[0]);
-    try testing.expectEqualStrings("packages/package-2/src/file-19.ts", paths[119]);
-    try testing.expect(temporary.has("packages/package-0/src/file-0.ts"));
-    try testing.expect(temporary.has("packages/package-2/src/file-19.ts"));
-}
-
-test "buildFileTree gives every file different content, so hashing has real work to do" {
-    var test_io = wc.files.TestIo.init();
-    defer test_io.deinit();
-    const io = test_io.io();
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    var temporary = try wc.files.TemporaryDir.create(io);
-    defer temporary.destroy();
-
-    const paths = try buildFileTree(io, allocator, temporary.path, 3);
-
-    var cache: wc.file_hash.FileHashCache = .empty;
-    var hashes = (try wc.file_hash.hashFiles(io, allocator, temporary.path, paths, &cache)).hashes;
-
-    try testing.expect(!std.mem.eql(u8, hashes.get(paths[0]).?, hashes.get(paths[1]).?));
-    try testing.expect(!std.mem.eql(u8, hashes.get(paths[1]).?, hashes.get(paths[2]).?));
-}
-
-test "buildFileTree writes files of the size the benchmark says it does" {
-    var test_io = wc.files.TestIo.init();
-    defer test_io.deinit();
-    const io = test_io.io();
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    var temporary = try wc.files.TemporaryDir.create(io);
-    defer temporary.destroy();
-
-    const paths = try buildFileTree(io, allocator, temporary.path, 1);
-    const stat = try wc.files.statFile(io, try wc.files.joinPath(allocator, &.{ temporary.path, paths[0] }));
-
-    try testing.expectEqual(@as(u64, FILE_SIZE_BYTES + paths[0].len), stat.size);
-}
-
-test "elapsedMs measures forwards" {
-    var test_io = wc.files.TestIo.init();
-    defer test_io.deinit();
-    const io = test_io.io();
-
-    const at = start(io);
-    wc.files.sleepMs(io, 1);
-    try testing.expect(elapsedMs(io, at) >= 1.0);
-}
-
-test "measurementFor finds a recorded result and reports a missing one" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    results = .empty;
-    try results.append(arena.allocator(), .{ .name = "hash", .file_count = 100, .milliseconds = 2.5 });
-
-    try testing.expectEqual(@as(f64, 2.5), measurementFor("hash", 100).?);
-    try testing.expect(measurementFor("hash", 1000) == null);
-    try testing.expect(measurementFor("other", 100) == null);
-
-    results = .empty;
-}
-
-test "stageNames lists each stage once, in the order first measured" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    results = .empty;
-    try results.append(allocator, .{ .name = "cold", .file_count = 100, .milliseconds = 1 });
-    try results.append(allocator, .{ .name = "warm", .file_count = 100, .milliseconds = 1 });
-    try results.append(allocator, .{ .name = "cold", .file_count = 1000, .milliseconds = 1 });
-
-    const names = try stageNames(allocator);
-    try testing.expectEqual(@as(usize, 2), names.len);
-    try testing.expectEqualStrings("cold", names[0]);
-    try testing.expectEqualStrings("warm", names[1]);
-
-    results = .empty;
-}
-
-test "benchmarkSize measures every stage and stays within budget" {
-    var test_io = wc.files.TestIo.init();
-    defer test_io.deinit();
-    const io = test_io.io();
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
+test {
     //
-    // Run at a tiny size, so the benchmark's own correctness is checked without the test suite
-    // paying for a twenty-thousand-file tree.
+    // The tests live in their own file so a change to them is never mistaken for a change
+    // to the code. Nothing else imports that file, so naming it here is what runs it.
     //
-    results = .empty;
-    var captured = std.Io.Writer.Allocating.init(allocator);
-    out = .{ .writer = &captured.writer };
-
-    try testing.expect(try benchmarkSize(io, allocator, 60));
-    try testing.expectEqual(@as(usize, 4), results.items.len);
-
-    for (results.items) |result| {
-        try testing.expectEqual(@as(usize, 60), result.file_count);
-        try testing.expect(result.milliseconds >= 0);
-    }
-
-    //
-    // The warm run must be faster than the cold one. That is the whole claim the cache makes, and a
-    // change that broke it would otherwise show up only as a slow build nobody traced back here.
-    //
-    try testing.expect(results.items[1].milliseconds < results.items[0].milliseconds);
-
-    results = .empty;
+    _ = @import("run.test.zig");
 }
