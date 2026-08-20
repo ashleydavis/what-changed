@@ -307,8 +307,23 @@ fn changeJsonFile(
     comptime mutate: fn (@TypeOf(context), std.mem.Allocator, Value) std.mem.Allocator.Error!Value,
     fail: *failure.Failure,
 ) failure.Error!void {
-    const current = (try readJsonObject(io, allocator, path)).contentOrNull();
-    writeJsonFile(io, allocator, path, try mutate(context, allocator, current)) catch |err| {
+    const source = try readJsonObject(io, allocator, path);
+
+    //
+    // A file that is there and cannot be read holds data nobody can see, and the change is built on
+    // what was read. Treating it as empty would write a file holding only this change, which for a
+    // baseline is every other target's record gone. The other four outcomes are safe to build on: an
+    // absent file has nothing to lose, and one that will not parse or is not an object has already
+    // lost it, so writing over it is the way back.
+    //
+    if (source == .unreadable) {
+        return fail.set(
+            "Refused to write \"{s}\": the file is there and could not be read: {s}. Writing would overwrite what it holds. Fix its permissions, or delete it and capture again.",
+            .{ path, files.describeError(source.unreadable) },
+        );
+    }
+
+    writeJsonFile(io, allocator, path, try mutate(context, allocator, source.contentOrNull())) catch |err| {
         return fail.set("Failed to write \"{s}\": {s}", .{ path, files.describeError(err) });
     };
 }

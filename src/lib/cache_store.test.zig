@@ -381,6 +381,43 @@ test "updateJsonFile releases the lock when it is done" {
     try testing.expect(!files.fileExists(io, try std.fmt.allocPrint(allocator, "{s}.lock", .{path})));
 }
 
+test "updateJsonFile refuses to write over a file it could not read" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var temporary = try files.TemporaryDir.create(io);
+    defer temporary.destroy();
+
+    //
+    // A directory where the file should be is the portable way to make a read fail. What matters is
+    // that the read failed at all, not which error it was.
+    //
+    const path = try temporary.join(allocator, "data.json");
+    try files.makeDirPath(io, path);
+
+    var fail = failure.Failure.init(allocator);
+    try testing.expectError(error.Failed, cache_store.updateJsonFile(io, allocator, path, @as([]const u8, "a"), addField, &fail));
+
+    //
+    // The whole point: an unreadable file holds data nobody can see, so a capture that treated it as
+    // empty would write a baseline holding one target and lose every other target's record.
+    //
+    const message = fail.message.?;
+    try testing.expect(std.mem.indexOf(u8, message, "Refused to write") != null);
+    try testing.expect(std.mem.indexOf(u8, message, "would overwrite what it holds") != null);
+    try testing.expect(temporary.has("data.json"));
+
+    //
+    // And the lock still came off, so the refusal does not block the next writer.
+    //
+    try testing.expect(!files.fileExists(io, try std.fmt.allocPrint(allocator, "{s}.lock", .{path})));
+}
+
 test "cacheReset writes an empty cache rather than deleting the file" {
     var test_io = files.TestIo.init();
     defer test_io.deinit();
