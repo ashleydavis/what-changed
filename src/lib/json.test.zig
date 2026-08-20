@@ -44,7 +44,7 @@ test "stringify indents by two spaces" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     try object.put(allocator, "hasBaseline", value.boolean(true));
     try object.put(allocator, "fileCount", value.int(4));
     try object.put(allocator, "changed", .{ .array = value.newArray(allocator) });
@@ -63,14 +63,14 @@ test "stringify renders nested arrays of objects" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var entry = value.newObject(allocator);
+    var entry: value.Object = .empty;
     try entry.put(allocator, "path", value.str("src/a.ts"));
     try entry.put(allocator, "previousHash", value.str(""));
 
     var array = value.newArray(allocator);
     try array.append(.{ .object = entry });
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     try object.put(allocator, "changed", .{ .array = array });
 
     try testing.expectEqualStrings(
@@ -90,7 +90,7 @@ test "a stringified value parses back to the same thing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     try object.put(allocator, "name", value.str("alpha"));
     try object.put(allocator, "count", value.int(12));
 

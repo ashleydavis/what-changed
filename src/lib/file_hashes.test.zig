@@ -74,7 +74,7 @@ test "fromValue reads a JSON object back into a map" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     try object.put(allocator, "src/a.ts", value.str("hash-a"));
     try object.put(allocator, "src/b.ts", value.str("hash-b"));
 
@@ -88,7 +88,7 @@ test "fromValue drops entries that are not strings" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     try object.put(allocator, "good.ts", value.str("hash"));
     try object.put(allocator, "bad.ts", value.int(7));
     try object.put(allocator, "worse.ts", .null);

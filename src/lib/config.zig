@@ -153,12 +153,12 @@ pub fn parseConfig(allocator: std.mem.Allocator, raw_text: []const u8, format: C
 
     const always = try readStringArrayField(allocator, parsed, "always", fail);
     for (always) |watched_path| {
-        try validateWatchedPath(allocator, watched_path, "always", fail);
+        try validateWatchedPath(watched_path, "always", fail);
     }
 
     const ignore = try readStringArrayField(allocator, parsed, "ignore", fail);
     for (ignore) |extension| {
-        try validateIgnoreExtension(allocator, extension, fail);
+        try validateIgnoreExtension(extension, fail);
     }
 
     const raw_targets = value.get(parsed, "targets");
@@ -294,7 +294,7 @@ pub fn parseTarget(allocator: std.mem.Allocator, raw_target: Value, seen_names: 
     const paths = try readStringArrayField(allocator, raw_target, "paths", fail);
     const field_description = try std.fmt.allocPrint(allocator, "target \"{s}\" paths", .{name});
     for (paths) |watched_path| {
-        try validateWatchedPath(allocator, watched_path, field_description, fail);
+        try validateWatchedPath(watched_path, field_description, fail);
     }
 
     //
@@ -330,7 +330,7 @@ pub fn parseTarget(allocator: std.mem.Allocator, raw_target: Value, seen_names: 
 // Rejects anything that is not a relative path inside the project. An absolute path or one that
 // climbs out with ".." would let the tool watch, and later report on, files outside the repository.
 //
-pub fn validateWatchedPath(allocator: std.mem.Allocator, watched_path: []const u8, field_description: []const u8, fail: *Failure) failure.Error!void {
+pub fn validateWatchedPath(watched_path: []const u8, field_description: []const u8, fail: *Failure) failure.Error!void {
     if (placeholderText(watched_path)) |written| {
         return fail.set("what-changed config field \"{s}\" must hold non-empty strings, got {s}", .{ field_description, written });
     }
@@ -347,8 +347,6 @@ pub fn validateWatchedPath(allocator: std.mem.Allocator, watched_path: []const u
             return fail.set("what-changed config field \"{s}\" must not contain a \"..\" segment, got \"{s}\"", .{ field_description, watched_path });
         }
     }
-
-    _ = allocator;
 }
 
 //
@@ -356,9 +354,7 @@ pub fn validateWatchedPath(allocator: std.mem.Allocator, watched_path: []const u
 // added silently, because "ts" could plausibly mean an extension or a directory and guessing wrong
 // would quietly stop a suite from running.
 //
-pub fn validateIgnoreExtension(allocator: std.mem.Allocator, extension: []const u8, fail: *Failure) failure.Error!void {
-    _ = allocator;
-
+pub fn validateIgnoreExtension(extension: []const u8, fail: *Failure) failure.Error!void {
     if (placeholderText(extension)) |written| {
         return fail.set("what-changed config field \"ignore\" must hold non-empty strings, got {s}", .{written});
     }

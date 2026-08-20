@@ -37,7 +37,7 @@ pub fn lessThanPath(_: void, left: []const u8, right: []const u8) bool {
 // file lister returned. A file that changes for no reason is noise in a diff and a needless write.
 //
 pub fn toValue(allocator: std.mem.Allocator, hashes: *const FileHashes) std.mem.Allocator.Error!value.Value {
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     for (try sortedKeys(allocator, hashes)) |path| {
         try object.put(allocator, path, value.str(hashes.get(path).?));
     }

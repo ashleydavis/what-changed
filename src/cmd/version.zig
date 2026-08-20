@@ -24,7 +24,7 @@ pub fn versionCommand(context: *const Context, output: ?[]const u8) wc.failure.E
     const is_built = !std.mem.eql(u8, wc.version.build_metadata.commit_hash, "dev");
 
     if (format != .text) {
-        var object = wc.value.newObject(allocator);
+        var object: wc.value.Object = .empty;
         try object.put(allocator, "version", wc.value.str(wc.version.version));
         try object.put(allocator, "commitHash", wc.value.str(wc.version.build_metadata.commit_hash));
         try object.put(allocator, "buildDate", wc.value.str(wc.version.build_metadata.build_date));

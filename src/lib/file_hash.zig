@@ -200,10 +200,10 @@ pub fn cacheToValue(allocator: std.mem.Allocator, cache: *const FileHashCache) s
     const keys = try allocator.dupe([]const u8, cache.keys());
     std.mem.sort([]const u8, keys, {}, file_hashes.lessThanPath);
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     for (keys) |path| {
         const entry = cache.get(path).?;
-        var record = value.newObject(allocator);
+        var record: value.Object = .empty;
         try record.put(allocator, "mtimeMs", .{ .float = entry.mtime_ms });
         try record.put(allocator, "size", value.int(@intCast(entry.size)));
         try record.put(allocator, "hash", value.str(entry.hash));

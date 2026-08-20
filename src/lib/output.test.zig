@@ -57,7 +57,7 @@ test "renderStructured renders json and yaml from the same object" {
     var names = value.newArray(allocator);
     try names.append(value.str("unit"));
 
-    var root = value.newObject(allocator);
+    var root: value.Object = .empty;
     try root.put(allocator, "targets", .{ .array = names });
 
     try testing.expectEqualStrings(
@@ -79,7 +79,7 @@ test "printStructured writes the rendering and one newline" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var root = value.newObject(allocator);
+    var root: value.Object = .empty;
     try root.put(allocator, "targets", .{ .array = value.newArray(allocator) });
 
     var captured = std.Io.Writer.Allocating.init(allocator);

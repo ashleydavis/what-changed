@@ -118,13 +118,13 @@ pub fn baselineToValue(allocator: std.mem.Allocator, baseline: *const Baseline) 
     const names = try allocator.dupe([]const u8, baseline.targets.keys());
     std.mem.sort([]const u8, names, {}, file_hashes_module.lessThanPath);
 
-    var targets = value.newObject(allocator);
+    var targets: value.Object = .empty;
     for (names) |name| {
         const recorded = baseline.targets.get(name).?;
         try targets.put(allocator, name, try file_hashes_module.toValue(allocator, &recorded));
     }
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     try object.put(allocator, "targets", .{ .object = targets });
     try object.put(allocator, "files", try file_hashes_module.toValue(allocator, &baseline.files));
     return .{ .object = object };

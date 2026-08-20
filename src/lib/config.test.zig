@@ -379,10 +379,10 @@ test "validateWatchedPath accepts a relative path inside the project" {
     const allocator = arena.allocator();
 
     var fail = Failure.init(allocator);
-    try config.validateWatchedPath(allocator, "src", "always", &fail);
-    try config.validateWatchedPath(allocator, "packages/a/src", "always", &fail);
-    try config.validateWatchedPath(allocator, "a..b", "always", &fail);
-    try config.validateWatchedPath(allocator, "package.json", "always", &fail);
+    try config.validateWatchedPath("src", "always", &fail);
+    try config.validateWatchedPath("packages/a/src", "always", &fail);
+    try config.validateWatchedPath("a..b", "always", &fail);
+    try config.validateWatchedPath("package.json", "always", &fail);
 }
 
 test "validateIgnoreExtension accepts a dotted extension" {
@@ -391,8 +391,8 @@ test "validateIgnoreExtension accepts a dotted extension" {
     const allocator = arena.allocator();
 
     var fail = Failure.init(allocator);
-    try config.validateIgnoreExtension(allocator, ".md", &fail);
-    try config.validateIgnoreExtension(allocator, ".test.ts", &fail);
+    try config.validateIgnoreExtension(".md", &fail);
+    try config.validateIgnoreExtension(".test.ts", &fail);
 }
 
 test "resolveConfigPath uses the named config, resolved against the working directory" {

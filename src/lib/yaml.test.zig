@@ -336,7 +336,7 @@ test "stringify renders a report the way the yaml package does" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var change = value.newObject(allocator);
+    var change: value.Object = .empty;
     try change.put(allocator, "path", value.str("src/a.ts"));
     try change.put(allocator, "kind", value.str("added"));
     try change.put(allocator, "previousHash", value.str(""));
@@ -344,7 +344,7 @@ test "stringify renders a report the way the yaml package does" {
     var changed = value.newArray(allocator);
     try changed.append(.{ .object = change });
 
-    var root = value.newObject(allocator);
+    var root: value.Object = .empty;
     try root.put(allocator, "hasBaseline", value.boolean(false));
     try root.put(allocator, "fileCount", value.int(4));
     try root.put(allocator, "changed", .{ .array = changed });
@@ -368,7 +368,7 @@ test "stringify renders a nested sequence inside a sequence item" {
     try watched.append(value.str("src"));
     try watched.append(value.str("scripts"));
 
-    var target = value.newObject(allocator);
+    var target: value.Object = .empty;
     try target.put(allocator, "name", value.str("unit"));
     try target.put(allocator, "watchedPaths", .{ .array = watched });
     try target.put(allocator, "changed", .{ .array = value.newArray(allocator) });
@@ -376,7 +376,7 @@ test "stringify renders a nested sequence inside a sequence item" {
     var targets = value.newArray(allocator);
     try targets.append(.{ .object = target });
 
-    var root = value.newObject(allocator);
+    var root: value.Object = .empty;
     try root.put(allocator, "targets", .{ .array = targets });
 
     try testing.expectEqualStrings(
@@ -394,9 +394,9 @@ test "stringify renders empty collections on one line" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var root = value.newObject(allocator);
+    var root: value.Object = .empty;
     try root.put(allocator, "targets", .{ .array = value.newArray(allocator) });
-    try root.put(allocator, "files", .{ .object = value.newObject(allocator) });
+    try root.put(allocator, "files", .{ .object = .empty });
 
     try testing.expectEqualStrings("targets: []\nfiles: {}", try yaml.stringify(allocator, .{ .object = root }));
 }
@@ -416,7 +416,7 @@ test "stringify then parse gives back the same document" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var target = value.newObject(allocator);
+    var target: value.Object = .empty;
     try target.put(allocator, "name", value.str("unit"));
     try target.put(allocator, "appliesHere", value.boolean(true));
     try target.put(allocator, "previousHash", value.str(""));
@@ -424,7 +424,7 @@ test "stringify then parse gives back the same document" {
     var targets = value.newArray(allocator);
     try targets.append(.{ .object = target });
 
-    var root = value.newObject(allocator);
+    var root: value.Object = .empty;
     try root.put(allocator, "fileCount", value.int(9));
     try root.put(allocator, "targets", .{ .array = targets });
 

@@ -74,7 +74,7 @@ test "toBaseline of an empty object is an empty baseline" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var baseline = try baseline_store.toBaseline(allocator, .{ .object = value.newObject(allocator) });
+    var baseline = try baseline_store.toBaseline(allocator, .{ .object = .empty });
     try testing.expectEqual(@as(usize, 0), baseline.targets.count());
     try testing.expectEqual(@as(usize, 0), baseline.files.count());
 }

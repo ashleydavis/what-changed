@@ -63,13 +63,13 @@ pub fn baselineShowCommand(context: *const Context, options: ReportOptions) wc.f
     if (format != .text) {
         var targets = wc.value.newArray(allocator);
         for (target_names) |name| {
-            var entry = wc.value.newObject(allocator);
+            var entry: wc.value.Object = .empty;
             try entry.put(allocator, "name", wc.value.str(name));
             try entry.put(allocator, "fileCount", wc.value.int(@intCast(baseline.targets.get(name).?.count())));
             try targets.append(.{ .object = entry });
         }
 
-        var object = wc.value.newObject(allocator);
+        var object: wc.value.Object = .empty;
         try object.put(allocator, "baselinePath", wc.value.str(baseline_path));
         try object.put(allocator, "status", wc.value.str(loaded.source.statusText()));
         try object.put(allocator, "targets", .{ .array = targets });

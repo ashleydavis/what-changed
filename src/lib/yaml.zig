@@ -168,7 +168,7 @@ const Parser = struct {
     // Parses consecutive `key: value` lines at one indentation into an object.
     //
     fn parseMapping(self: *Parser, indent: usize) Error!Value {
-        var object = value.newObject(self.allocator);
+        var object: value.Object = .empty;
 
         while (self.peek()) |line| {
             if (line.indent != indent or isSequenceEntry(line.content)) break;
@@ -366,7 +366,7 @@ const Flow = struct {
     //
     fn parseMapping(self: *Flow) Parser.Error!Value {
         self.at += 1; // The opening brace.
-        var object = value.newObject(self.parser.allocator);
+        var object: value.Object = .empty;
 
         self.skipSpaces();
         if (self.at < self.text.len and self.text[self.at] == '}') {

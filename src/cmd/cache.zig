@@ -61,7 +61,7 @@ pub fn cacheShowCommand(context: *const Context, options: ReportOptions) wc.fail
     const format = try wc.output.parseOutputFormat(options.output, context.fail);
 
     if (format != .text) {
-        var object = wc.value.newObject(allocator);
+        var object: wc.value.Object = .empty;
         try object.put(allocator, "cacheDir", wc.value.str(cache_dir));
         try object.put(allocator, "entryCount", wc.value.int(@intCast(entry_count)));
         try wc.output.printStructured(allocator, context.out, .{ .object = object }, format);

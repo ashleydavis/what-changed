@@ -396,13 +396,13 @@ pub fn structuredReport(allocator: std.mem.Allocator, result: ReportResult, mode
             try names.append(value.str(name));
         }
 
-        var object = value.newObject(allocator);
+        var object: value.Object = .empty;
         try object.put(allocator, "targets", .{ .array = names });
         return .{ .object = object };
     }
 
     if (mode == .files) {
-        var object = value.newObject(allocator);
+        var object: value.Object = .empty;
         try object.put(allocator, "hasBaseline", value.boolean(result.has_baseline));
         try object.put(allocator, "fileCount", value.int(@intCast(result.file_count)));
         try object.put(allocator, "changed", try changed_files.toValueArray(allocator, result.changes));
@@ -416,7 +416,7 @@ pub fn structuredReport(allocator: std.mem.Allocator, result: ReportResult, mode
             try watched.append(value.str(watched_path));
         }
 
-        var entry = value.newObject(allocator);
+        var entry: value.Object = .empty;
         try entry.put(allocator, "name", value.str(target.name));
         try entry.put(allocator, "watchedPaths", .{ .array = watched });
         try entry.put(allocator, "appliesHere", value.boolean(target.applies_here));
@@ -424,7 +424,7 @@ pub fn structuredReport(allocator: std.mem.Allocator, result: ReportResult, mode
         try targets.append(.{ .object = entry });
     }
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     try object.put(allocator, "hasBaseline", value.boolean(result.has_baseline));
     try object.put(allocator, "fileCount", value.int(@intCast(result.file_count)));
     try object.put(allocator, "targets", .{ .array = targets });
@@ -459,7 +459,7 @@ pub fn listTargets(context: *const Context, options: ReportOptions) failure.Erro
             try rendered.append(value.str(name));
         }
 
-        var object = value.newObject(allocator);
+        var object: value.Object = .empty;
         try object.put(allocator, "targets", .{ .array = rendered });
         try output_module.printStructured(allocator, context.out, .{ .object = object }, format);
         return 0;

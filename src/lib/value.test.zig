@@ -2,12 +2,11 @@ const std = @import("std");
 const value = @import("value.zig");
 const testing = std.testing;
 
-test "newObject and newArray start empty" {
+test "newArray starts empty" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try testing.expectEqual(@as(usize, 0), value.newObject(allocator).count());
     try testing.expectEqual(@as(usize, 0), value.newArray(allocator).items.len);
 }
 
@@ -22,7 +21,7 @@ test "get reads a field off an object" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     try object.put(allocator, "name", value.str("alpha"));
     const wrapped = value.Value{ .object = object };
 
@@ -41,7 +40,7 @@ test "isPlainObject accepts objects and rejects everything else" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try testing.expect(value.isPlainObject(.{ .object = value.newObject(allocator) }));
+    try testing.expect(value.isPlainObject(.{ .object = .empty }));
     try testing.expect(!value.isPlainObject(.{ .array = value.newArray(allocator) }));
     try testing.expect(!value.isPlainObject(.null));
     try testing.expect(!value.isPlainObject(value.str("text")));

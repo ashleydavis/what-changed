@@ -271,12 +271,12 @@ test "cacheFromValue reads records back" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var record = value.newObject(allocator);
+    var record: value.Object = .empty;
     try record.put(allocator, "mtimeMs", .{ .float = 1.5 });
     try record.put(allocator, "size", value.int(10));
     try record.put(allocator, "hash", value.str("hash-a"));
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     try object.put(allocator, "a.ts", .{ .object = record });
 
     var cache = try file_hash.cacheFromValue(allocator, .{ .object = object });
@@ -291,21 +291,21 @@ test "cacheFromValue drops records that are incomplete or the wrong type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var missing_hash = value.newObject(allocator);
+    var missing_hash: value.Object = .empty;
     try missing_hash.put(allocator, "mtimeMs", .{ .float = 1 });
     try missing_hash.put(allocator, "size", value.int(1));
 
-    var wrong_type = value.newObject(allocator);
+    var wrong_type: value.Object = .empty;
     try wrong_type.put(allocator, "mtimeMs", value.str("soon"));
     try wrong_type.put(allocator, "size", value.int(1));
     try wrong_type.put(allocator, "hash", value.str("h"));
 
-    var good = value.newObject(allocator);
+    var good: value.Object = .empty;
     try good.put(allocator, "mtimeMs", value.int(3));
     try good.put(allocator, "size", value.int(1));
     try good.put(allocator, "hash", value.str("h"));
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     try object.put(allocator, "missing.ts", .{ .object = missing_hash });
     try object.put(allocator, "wrong.ts", .{ .object = wrong_type });
     try object.put(allocator, "scalar.ts", value.str("nope"));

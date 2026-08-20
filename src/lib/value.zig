@@ -33,19 +33,6 @@ pub const Object = std.json.ObjectMap;
 pub const Array = std.json.Array;
 
 //
-// Makes an empty object.
-//
-pub fn newObject(allocator: std.mem.Allocator) Object {
-    //
-    // The object holds no allocator of its own: every `put` takes one. The parameter stays so the
-    // call sites read the same as the array ones beside them, and so this can go back to holding an
-    // allocator without touching them if the standard library changes again.
-    //
-    _ = allocator;
-    return .empty;
-}
-
-//
 // Makes an empty array.
 //
 pub fn newArray(allocator: std.mem.Allocator) Array {

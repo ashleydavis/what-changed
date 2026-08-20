@@ -21,9 +21,9 @@ fn replaceWith(replacement: Value, allocator: std.mem.Allocator, current: Value)
 // Adds one field to whatever is in the file, for testing that the read and the write are one step.
 //
 fn addField(name: []const u8, allocator: std.mem.Allocator, current: Value) std.mem.Allocator.Error!Value {
-    var object = switch (current) {
+    var object: value.Object = switch (current) {
         .object => |existing| existing,
-        else => value.newObject(allocator),
+        else => .empty,
     };
     try object.put(allocator, name, value.boolean(true));
     return .{ .object = object };
@@ -151,7 +151,7 @@ test "writeJsonFile leaves no temporary file behind" {
     var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
-    var object = value.newObject(allocator);
+    var object: value.Object = .empty;
     try object.put(allocator, "a", value.int(1));
     try cache_store.writeJsonFile(io, allocator, try temporary.join(allocator, "out.json"), .{ .object = object });
 
@@ -179,9 +179,9 @@ test "writeJsonFile writes the JSON indented by two spaces" {
     var temporary = try files.TemporaryDir.create(io);
     defer temporary.destroy();
 
-    var object = value.newObject(allocator);
-    try object.put(allocator, "targets", .{ .object = value.newObject(allocator) });
-    try object.put(allocator, "files", .{ .object = value.newObject(allocator) });
+    var object: value.Object = .empty;
+    try object.put(allocator, "targets", .{ .object = .empty });
+    try object.put(allocator, "files", .{ .object = .empty });
     try cache_store.writeJsonFile(io, allocator, try temporary.join(allocator, "baseline.json"), .{ .object = object });
 
     try testing.expectEqualStrings(
@@ -326,7 +326,7 @@ test "updateJsonFile writes the result of the change" {
     defer temporary.destroy();
     const path = try temporary.join(allocator, "nested/data.json");
 
-    var replacement = value.newObject(allocator);
+    var replacement: value.Object = .empty;
     try replacement.put(allocator, "written", value.boolean(true));
 
     var fail = failure.Failure.init(allocator);
