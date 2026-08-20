@@ -5,6 +5,7 @@ const changed_files = @import("changed_files.zig");
 const file_hashes_module = @import("file_hashes.zig");
 const categorize = @import("categorize.zig");
 const file_hashes_test = @import("file_hashes.test.zig");
+const file_hash_test = @import("file_hash.test.zig");
 const Config = config_module.Config;
 const TargetConfig = config_module.TargetConfig;
 const Baseline = baseline_store.Baseline;
@@ -119,25 +120,25 @@ test "filesUnderWatchedPaths keeps only what falls under a watched path" {
     try testing.expect(under.get("stray/x.ts") == null);
 }
 
-test "pathsUnderWatchedPaths keeps only what falls under a watched path" {
+test "unreadableUnderWatchedPaths keeps only what falls under a watched path" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const under = try categorize.pathsUnderWatchedPaths(allocator, &.{ "src/a.ts", "docs/g.md", "stray/x.ts" }, &.{ "src", "docs" });
+    const under = try categorize.unreadableUnderWatchedPaths(allocator, &.{ file_hash_test.unreadableAt("src/a.ts"), file_hash_test.unreadableAt("docs/g.md"), file_hash_test.unreadableAt("stray/x.ts") }, &.{ "src", "docs" });
     try testing.expectEqual(@as(usize, 2), under.len);
-    try testing.expectEqualStrings("src/a.ts", under[0]);
-    try testing.expectEqualStrings("docs/g.md", under[1]);
+    try testing.expectEqualStrings("src/a.ts", under[0].path);
+    try testing.expectEqualStrings("docs/g.md", under[1].path);
 }
 
-test "pathsNotUnderWatchedPaths keeps only what falls under none of them" {
+test "unreadableNotUnderWatchedPaths keeps only what falls under none of them" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const outside = try categorize.pathsNotUnderWatchedPaths(allocator, &.{ "src/a.ts", "docs/g.md", "stray/x.ts" }, &.{ "src", "docs" });
+    const outside = try categorize.unreadableNotUnderWatchedPaths(allocator, &.{ file_hash_test.unreadableAt("src/a.ts"), file_hash_test.unreadableAt("docs/g.md"), file_hash_test.unreadableAt("stray/x.ts") }, &.{ "src", "docs" });
     try testing.expectEqual(@as(usize, 1), outside.len);
-    try testing.expectEqualStrings("stray/x.ts", outside[0]);
+    try testing.expectEqualStrings("stray/x.ts", outside[0].path);
 }
 
 test "categorizeChanges puts each changed file under the target that watches it" {
@@ -388,7 +389,7 @@ test "categorizeChanges gives an unreadable file to the target that watches it" 
     try targets.put(allocator, "unit", try file_hashes_test.fromPairs(allocator, &.{.{ "src/locked.ts", "old" }}));
     const baseline = Baseline{ .targets = targets, .files = .empty };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{"src/locked.ts"}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{file_hash_test.unreadableAt("src/locked.ts")}, &baseline, "linux");
 
     try testing.expectEqual(@as(usize, 1), categorized.targets[0].changed_files.len);
     try testing.expectEqualStrings("src/locked.ts", categorized.targets[0].changed_files[0].path);
@@ -410,7 +411,7 @@ test "categorizeChanges reports an unreadable file no target watches as unwatche
     var hashes: FileHashes = .empty;
     const baseline = Baseline{ .targets = .empty, .files = .empty };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{"loose/locked.ts"}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{file_hash_test.unreadableAt("loose/locked.ts")}, &baseline, "linux");
 
     try testing.expectEqual(@as(usize, 0), categorized.targets[0].changed_files.len);
     try testing.expectEqual(@as(usize, 1), categorized.unwatched_files.len);

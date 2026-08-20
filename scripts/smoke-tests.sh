@@ -652,6 +652,37 @@ for parallel_target in $PARALLEL_TARGETS; do
     assert_output_lacks "$parallel_target"
 done
 
+scenario "39. A file that cannot be read says why, rather than only that it could not be read"
+
+# chmod is the only way to make a real file unreadable, and it does nothing to root, so this one
+# scenario is skipped there rather than failing for a reason that has nothing to do with the tool.
+if [ "$(id -u)" = "0" ]; then
+    echo -e "  ${YELLOW}SKIP${NC} running as root, where chmod cannot make a file unreadable"
+else
+    {
+        echo "targets:"
+        echo "  - name: unit"
+        echo "    paths:"
+        echo "      - src"
+    } > "$REPO_DIR/what-changed.yaml"
+
+    echo "locked" > "$REPO_DIR/src/locked.ts"
+    chmod 000 "$REPO_DIR/src/locked.ts"
+
+    run_repo_cli changes
+    assert_exit 0
+    assert_output_contains "src/locked.ts"
+    assert_output_contains "permission denied"
+
+    run_repo_cli changes --output json
+    assert_exit 0
+    assert_output_contains "\"reason\""
+    assert_output_contains "permission denied"
+
+    chmod 644 "$REPO_DIR/src/locked.ts"
+    rm -f "$REPO_DIR/src/locked.ts"
+fi
+
 echo ""
 echo -e "${BLUE}Throwaway directories left at $WORK_DIR and $REPO_DIR${NC}"
 

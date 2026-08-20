@@ -9,6 +9,16 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 const testing = std.testing;
 
 //
+// An unreadable file with a fixed reason, so a test case naming one is a single argument.
+//
+// The reason is a real one from `files.describeError` rather than a made-up string, so a test that
+// asserts on it is asserting on what a person would actually see.
+//
+pub fn unreadableAt(path: []const u8) file_hash.UnreadableFile {
+    return .{ .path = path, .reason = "permission denied" };
+}
+
+//
 // The SHA-256 of "hello\n", which is what `echo hello | sha256sum` gives. A known-good value, so
 // these tests check the digest is right rather than only that it is consistent with itself.
 //
@@ -246,6 +256,39 @@ test "hashFiles with nothing to hash gives nothing" {
     var hashed = try file_hash.hashFiles(io, allocator, "/nowhere", &.{}, &cache);
     try testing.expectEqual(@as(usize, 0), hashed.hashes.count());
     try testing.expectEqual(@as(usize, 0), hashed.unreadable.len);
+}
+
+test "hashFiles says why a file could not be read" {
+    var test_io = files.TestIo.init();
+    defer test_io.deinit();
+    const io = test_io.io();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var temporary = try files.TemporaryDir.create(io);
+    defer temporary.destroy();
+    try temporary.write("fine.ts", "content");
+
+    //
+    // A directory where the file should be is the portable way to make a read fail. Which error it
+    // is differs by platform, so the test asserts a reason came back rather than which one.
+    //
+    try files.makeDirPath(io, try temporary.join(allocator, "locked.ts"));
+
+    var cache: FileHashCache = .empty;
+    var hashed = try file_hash.hashFiles(io, allocator, temporary.path, &.{ "fine.ts", "locked.ts" }, &cache);
+
+    try testing.expectEqual(@as(usize, 1), hashed.hashes.count());
+    try testing.expectEqual(@as(usize, 1), hashed.unreadable.len);
+    try testing.expectEqualStrings("locked.ts", hashed.unreadable[0].path);
+
+    //
+    // The reason is the whole point. Without it the report says a file could not be read and leaves
+    // the person to work out whether it is permissions, a symlink loop, or a disk on its way out.
+    //
+    try testing.expect(hashed.unreadable[0].reason.len > 0);
 }
 
 test "cacheToValue writes each entry as a record, sorted by path" {

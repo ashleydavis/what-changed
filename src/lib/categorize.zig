@@ -3,7 +3,9 @@ const config_module = @import("config.zig");
 const baseline_store = @import("baseline_store.zig");
 const changed_files = @import("changed_files.zig");
 const file_hashes_module = @import("file_hashes.zig");
+const file_hash = @import("file_hash.zig");
 
+const UnreadableFile = file_hash.UnreadableFile;
 const Config = config_module.Config;
 const TargetConfig = config_module.TargetConfig;
 const Baseline = baseline_store.Baseline;
@@ -143,29 +145,29 @@ pub fn filesUnderWatchedPaths(allocator: std.mem.Allocator, hashes: *const FileH
 }
 
 //
-// Narrows a list of paths to those falling under the given watched paths.
+// Narrows the unreadable files to those falling under the given watched paths.
 //
-// The same rule as `filesUnderWatchedPaths`, for the paths that have no hash to carry: a file that
-// could not be read still belongs to whichever targets watch it.
+// The same rule as `filesUnderWatchedPaths`, for the files that have no hash to carry: a file that
+// could not be read still belongs to whichever targets watch it, and takes its reason with it.
 //
-pub fn pathsUnderWatchedPaths(allocator: std.mem.Allocator, paths: []const []const u8, watched_paths: []const []const u8) std.mem.Allocator.Error![][]const u8 {
-    var under: std.ArrayList([]const u8) = .empty;
-    for (paths) |path| {
-        if (isWatchedBy(path, watched_paths)) {
-            try under.append(allocator, path);
+pub fn unreadableUnderWatchedPaths(allocator: std.mem.Allocator, unreadable: []const UnreadableFile, watched_paths: []const []const u8) std.mem.Allocator.Error![]UnreadableFile {
+    var under: std.ArrayList(UnreadableFile) = .empty;
+    for (unreadable) |file| {
+        if (isWatchedBy(file.path, watched_paths)) {
+            try under.append(allocator, file);
         }
     }
     return under.toOwnedSlice(allocator);
 }
 
 //
-// The other half of `pathsUnderWatchedPaths`: the paths no target watches.
+// The other half of `unreadableUnderWatchedPaths`: the unreadable files no target watches.
 //
-pub fn pathsNotUnderWatchedPaths(allocator: std.mem.Allocator, paths: []const []const u8, watched_paths: []const []const u8) std.mem.Allocator.Error![][]const u8 {
-    var outside: std.ArrayList([]const u8) = .empty;
-    for (paths) |path| {
-        if (!isWatchedBy(path, watched_paths)) {
-            try outside.append(allocator, path);
+pub fn unreadableNotUnderWatchedPaths(allocator: std.mem.Allocator, unreadable: []const UnreadableFile, watched_paths: []const []const u8) std.mem.Allocator.Error![]UnreadableFile {
+    var outside: std.ArrayList(UnreadableFile) = .empty;
+    for (unreadable) |file| {
+        if (!isWatchedBy(file.path, watched_paths)) {
+            try outside.append(allocator, file);
         }
     }
     return outside.toOwnedSlice(allocator);
@@ -179,7 +181,7 @@ pub fn pathsNotUnderWatchedPaths(allocator: std.mem.Allocator, paths: []const []
 // is what lets a caller run one suite, capture just that target, and leave every other target
 // correctly reported as still needing to run.
 //
-pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, hashes: *const FileHashes, unreadable: []const []const u8, baseline: *const Baseline, platform: []const u8) std.mem.Allocator.Error!CategorizedChanges {
+pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, hashes: *const FileHashes, unreadable: []const UnreadableFile, baseline: *const Baseline, platform: []const u8) std.mem.Allocator.Error!CategorizedChanges {
     var targets: std.ArrayList(TargetChanges) = .empty;
 
     for (config.targets) |*target| {
@@ -196,7 +198,7 @@ pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, ha
                 allocator,
                 &under,
                 compared_against,
-                try pathsUnderWatchedPaths(allocator, unreadable, watched_paths),
+                try unreadableUnderWatchedPaths(allocator, unreadable, watched_paths),
             );
         }
 
@@ -236,7 +238,7 @@ pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, ha
         allocator,
         &unwatched,
         &recorded_unwatched,
-        try pathsNotUnderWatchedPaths(allocator, unreadable, all_watched_paths.items),
+        try unreadableNotUnderWatchedPaths(allocator, unreadable, all_watched_paths.items),
     );
 
     return .{

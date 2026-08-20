@@ -134,7 +134,14 @@ pub fn hashFileContent(io: std.Io, allocator: std.mem.Allocator, full_path: []co
     var chunk: [READ_BUFFER_BYTES]u8 = undefined;
     var reader = files.fileReader(io, file, &reader_buffer);
     while (true) {
-        const read = reader.interface.readSliceShort(&chunk) catch break;
+        //
+        // A short read is how the end of the file arrives, so it is not an error and does not appear
+        // here. `ReadFailed` is a real failure part way through, and it is returned rather than
+        // broken out of: breaking would hand back the digest of however much was read, and a file
+        // that failed at byte one would hash as empty and report as modified rather than unreadable.
+        // The reader keeps the error that caused it, which is what makes the reason worth printing.
+        //
+        const read = reader.interface.readSliceShort(&chunk) catch return reader.err orelse error.ReadFailed;
         if (read == 0) break;
         digest.update(chunk[0..read]);
     }
@@ -146,6 +153,28 @@ pub fn hashFileContent(io: std.Io, allocator: std.mem.Allocator, full_path: []co
     @memcpy(hex, &std.fmt.bytesToHex(raw, .lower));
     return hex;
 }
+
+//
+// A file that is on disk and could not be read, and what stopped it.
+//
+// The reason is worked out here, where the error is still in hand, and carried as text from then on.
+// Everything downstream wants the words rather than the error value, and turning it into words at the
+// point it happened is what stops the error being dropped on the way, which is what used to happen.
+//
+pub const UnreadableFile = struct {
+    //
+    // The repository-relative path, the same spelling every other report uses.
+    //
+    path: []const u8,
+
+    //
+    // Why it could not be read, in the same words every other filesystem failure in the tool uses.
+    //
+    // Named rather than counted, because "permission denied" and "too many open files" are two
+    // different problems with two different fixes, and the path alone says neither.
+    //
+    reason: []const u8,
+};
 
 //
 // What came of hashing a whole set of files.
@@ -168,7 +197,7 @@ pub const HashedFiles = struct {
     // The files that were simply gone are not listed: they are absent from `hashes`, which is all the
     // comparison needs to report them as deletions.
     //
-    unreadable: [][]const u8,
+    unreadable: []UnreadableFile,
 };
 
 //
@@ -180,13 +209,16 @@ pub fn hashFiles(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8,
     var hashes: FileHashes = .empty;
     try hashes.ensureTotalCapacity(allocator, relative_paths.len);
 
-    var unreadable: std.ArrayList([]const u8) = .empty;
+    var unreadable: std.ArrayList(UnreadableFile) = .empty;
 
     for (relative_paths) |relative_path| {
         switch (try hashFile(io, allocator, root_dir, relative_path, cache)) {
             .hashed => |hash| try hashes.put(allocator, relative_path, hash),
             .gone => {},
-            .unreadable => try unreadable.append(allocator, relative_path),
+            .unreadable => |err| try unreadable.append(allocator, .{
+                .path = relative_path,
+                .reason = files.describeError(err),
+            }),
         }
     }
 

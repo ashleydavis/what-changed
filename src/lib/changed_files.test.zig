@@ -3,6 +3,7 @@ const value = @import("value.zig");
 const file_hashes = @import("file_hashes.zig");
 const changed_files = @import("changed_files.zig");
 const file_hashes_test = @import("file_hashes.test.zig");
+const file_hash_test = @import("file_hash.test.zig");
 const FileHashes = file_hashes.FileHashes;
 const testing = std.testing;
 
@@ -114,7 +115,7 @@ test "diffFileHashes reports an unreadable file as unreadable rather than delete
     var current: FileHashes = .empty;
     var baseline = try file_hashes_test.fromPairs(allocator, &.{.{ "src/locked.ts", "old" }});
 
-    const changes = try changed_files.diffFileHashes(allocator, &current, &baseline, &.{"src/locked.ts"});
+    const changes = try changed_files.diffFileHashes(allocator, &current, &baseline, &.{file_hash_test.unreadableAt("src/locked.ts")});
     try testing.expectEqual(@as(usize, 1), changes.len);
     try testing.expectEqual(changed_files.FileChangeKind.unreadable, changes[0].kind);
     try testing.expectEqualStrings("src/locked.ts", changes[0].path);
@@ -130,7 +131,7 @@ test "diffFileHashes reports an unreadable file the baseline never held" {
     var current: FileHashes = .empty;
     var baseline: FileHashes = .empty;
 
-    const changes = try changed_files.diffFileHashes(allocator, &current, &baseline, &.{"src/locked.ts"});
+    const changes = try changed_files.diffFileHashes(allocator, &current, &baseline, &.{file_hash_test.unreadableAt("src/locked.ts")});
     try testing.expectEqual(@as(usize, 1), changes.len);
     try testing.expectEqual(changed_files.FileChangeKind.unreadable, changes[0].kind);
     try testing.expectEqualStrings("", changes[0].previous_hash);
@@ -196,7 +197,7 @@ test "diffFileHashes still reports a deletion beside an unreadable file" {
         .{ "locked.ts", "old" },
     });
 
-    const changes = try changed_files.diffFileHashes(allocator, &current, &baseline, &.{"locked.ts"});
+    const changes = try changed_files.diffFileHashes(allocator, &current, &baseline, &.{file_hash_test.unreadableAt("locked.ts")});
     try testing.expectEqual(@as(usize, 2), changes.len);
     try testing.expectEqualStrings("gone.ts", changes[0].path);
     try testing.expectEqual(changed_files.FileChangeKind.deleted, changes[0].kind);
@@ -213,7 +214,7 @@ test "formatChangedFiles renders a line per change with a short hash" {
         .{ .path = "src/a.ts", .kind = .added, .hash = "0123456789abcdef0123", .previous_hash = "" },
         .{ .path = "src/b.ts", .kind = .modified, .hash = "aaaabbbbccccddddeeee", .previous_hash = "old" },
         .{ .path = "src/c.ts", .kind = .deleted, .hash = "", .previous_hash = "ffffeeeeddddcccc1111" },
-        .{ .path = "src/d.ts", .kind = .unreadable, .hash = "", .previous_hash = "1111222233334444aaaa" },
+        .{ .path = "src/d.ts", .kind = .unreadable, .hash = "", .previous_hash = "1111222233334444aaaa", .reason = "permission denied" },
     });
 
     try testing.expectEqual(@as(usize, 4), lines.len);
@@ -227,8 +228,37 @@ test "formatChangedFiles renders a line per change with a short hash" {
 
     //
     // Same for an unreadable one: the last hash anyone managed to compute is the only one there is.
+    // The reason follows the path, because the path alone leaves the reader to work out whether it
+    // is permissions, a symlink loop, or a disk on its way out.
     //
-    try testing.expectEqualStrings("  U  1111222233334444  src/d.ts", lines[3]);
+    try testing.expectEqualStrings("  U  1111222233334444  src/d.ts  (permission denied)", lines[3]);
+}
+
+test "formatChangedFiles leaves the reason off every kind that has none" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    //
+    // Added, modified and deleted are answers, not failures, so their lines are exactly what they
+    // were before the reason existed.
+    //
+    const lines = try changed_files.formatChangedFiles(allocator, &.{
+        .{ .path = "src/a.ts", .kind = .added, .hash = "0123456789abcdef0123", .previous_hash = "" },
+    });
+    try testing.expectEqualStrings("  A  0123456789abcdef  src/a.ts", lines[0]);
+}
+
+test "diffFileHashes carries the reason a file could not be read" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var current: FileHashes = .empty;
+    var baseline: FileHashes = .empty;
+
+    const changes = try changed_files.diffFileHashes(allocator, &current, &baseline, &.{file_hash_test.unreadableAt("src/locked.ts")});
+    try testing.expectEqualStrings("permission denied", changes[0].reason);
 }
 
 test "formatChangedFiles copes with a hash shorter than the short form" {
@@ -262,8 +292,18 @@ test "toValue renders a change with the field names a script reads" {
     try testing.expectEqualStrings("kind", rendered.object.keys()[1]);
     try testing.expectEqualStrings("hash", rendered.object.keys()[2]);
     try testing.expectEqualStrings("previousHash", rendered.object.keys()[3]);
+    try testing.expectEqualStrings("reason", rendered.object.keys()[4]);
     try testing.expectEqualStrings("modified", value.get(rendered, "kind").?.string);
     try testing.expectEqualStrings("old", value.get(rendered, "previousHash").?.string);
+
+    //
+    // Always present, empty for every kind but unreadable, so a script reads one field rather than
+    // testing whether it is there.
+    //
+    try testing.expectEqualStrings("", value.get(rendered, "reason").?.string);
+
+    const unreadable = changed_files.ChangedFile{ .path = "src/locked.ts", .kind = .unreadable, .hash = "", .previous_hash = "old", .reason = "permission denied" };
+    try testing.expectEqualStrings("permission denied", value.get(try unreadable.toValue(allocator), "reason").?.string);
 }
 
 test "toValueArray renders every change, and nothing as an empty array" {

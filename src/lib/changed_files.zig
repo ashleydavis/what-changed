@@ -1,8 +1,10 @@
 const std = @import("std");
 const value = @import("value.zig");
 const file_hashes = @import("file_hashes.zig");
+const file_hash = @import("file_hash.zig");
 
 const FileHashes = file_hashes.FileHashes;
+const UnreadableFile = file_hash.UnreadableFile;
 
 //
 // What happened to one file since the baseline was recorded.
@@ -69,6 +71,15 @@ pub const ChangedFile = struct {
     previous_hash: []const u8,
 
     //
+    // Why the file could not be read, and an empty string for every other kind.
+    //
+    // Only `unreadable` has one. The other three kinds are answers, and an answer has no reason: a
+    // modified file is modified. This is here because the path alone sends someone looking without
+    // saying what for, and "permission denied" and "too many open files" need different fixes.
+    //
+    reason: []const u8 = "",
+
+    //
     // Renders this change as the object the machine-readable formats print. The field names are
     // part of the tool's output, so a script reading the JSON can rely on them.
     //
@@ -78,6 +89,7 @@ pub const ChangedFile = struct {
         try object.put(allocator, "kind", value.str(self.kind.text()));
         try object.put(allocator, "hash", value.str(self.hash));
         try object.put(allocator, "previousHash", value.str(self.previous_hash));
+        try object.put(allocator, "reason", value.str(self.reason));
         return .{ .object = object };
     }
 };
@@ -109,17 +121,18 @@ fn lessThanChange(_: void, left: ChangedFile, right: ChangedFile) bool {
 // `current` for a different reason, so they are reported as their own kind rather than being counted
 // among the deletions.
 //
-pub fn diffFileHashes(allocator: std.mem.Allocator, current: *const FileHashes, baseline: *const FileHashes, unreadable: []const []const u8) std.mem.Allocator.Error![]ChangedFile {
+pub fn diffFileHashes(allocator: std.mem.Allocator, current: *const FileHashes, baseline: *const FileHashes, unreadable: []const UnreadableFile) std.mem.Allocator.Error![]ChangedFile {
     var changes: std.ArrayList(ChangedFile) = .empty;
 
     var could_not_read: std.StringArrayHashMapUnmanaged(void) = .empty;
-    for (unreadable) |relative_path| {
-        try could_not_read.put(allocator, relative_path, {});
+    for (unreadable) |file| {
+        try could_not_read.put(allocator, file.path, {});
         try changes.append(allocator, .{
-            .path = relative_path,
+            .path = file.path,
             .kind = .unreadable,
             .hash = "",
-            .previous_hash = baseline.get(relative_path) orelse "",
+            .previous_hash = baseline.get(file.path) orelse "",
+            .reason = file.reason,
         });
     }
 
@@ -154,15 +167,23 @@ pub fn diffFileHashes(allocator: std.mem.Allocator, current: *const FileHashes, 
 // Renders the changed files as the lines the CLI prints: a one-letter kind, the short hash, and the
 // path. A file with no current hash, deleted or unreadable, shows the hash it used to have.
 //
+// A file that could not be read has the reason in brackets after the path. Only that kind carries
+// one, so every other line is exactly what it was.
+//
 pub fn formatChangedFiles(allocator: std.mem.Allocator, changes: []const ChangedFile) std.mem.Allocator.Error![][]const u8 {
     var lines: std.ArrayList([]const u8) = .empty;
 
     for (changes) |change| {
         const shown_hash = if (change.hash.len == 0) change.previous_hash else change.hash;
         const short_hash = shown_hash[0..@min(16, shown_hash.len)];
-        try lines.append(allocator, try std.fmt.allocPrint(allocator, "  {c}  {s}  {s}", .{
+        const line = try std.fmt.allocPrint(allocator, "  {c}  {s}  {s}", .{
             change.kind.marker(), short_hash, change.path,
-        }));
+        });
+
+        try lines.append(allocator, if (change.reason.len == 0)
+            line
+        else
+            try std.fmt.allocPrint(allocator, "{s}  ({s})", .{ line, change.reason }));
     }
 
     return lines.toOwnedSlice(allocator);

@@ -221,7 +221,7 @@ const HashedFileTree = struct {
     // called unchanged, and saying so is the difference between a permission problem being noticed
     // and it reading as a deletion on every run for as long as it lasts.
     //
-    unreadable: [][]const u8,
+    unreadable: []file_hash.UnreadableFile,
 };
 
 //
