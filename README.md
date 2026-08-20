@@ -1,16 +1,23 @@
 # what-changed
 
-Reports which files have changed since a recorded baseline and which of your project's targets those changes fall under.
+A small self-contained executable that reports which files have changed since a recorded baseline and which of your project's targets those changes fall under.
+
+## Motivation
+
+- I want to let AI run autonomously, but it tends to forget to test and broken commits pile up.
+- A Git pre-commit hook fixes that: it forces the testing to happen before anything is committed.
+- But my e2e and smoke tests across all platforms are expensive, so I only want to run the ones whose code has changed.
+- `what-changed` does that. It works out what code changed and tells you which of your compile, build and test targets to run.
 
 ## What's it for?
 
-It prevents unnecessary rebuilds and retests of parts of the project that have not changed since they were last built or tested.
+It prevents unnecessary rebuilds and retests of parts of your project that have not changed since they were last built or tested.
 
-Most projects run everything on every change. It hurts most in a pre-commit hook. A hook that runs the whole test suite makes every commit cost the whole test suite, even just for README or documentation changes that don't really need to run tests.
+This really helps in a pre-commit hook, where you want to compile/build/test everything, but to make it as fast as possible we only want to do that for the parts of our project that have changed. For example, there's no point running your e2e tests because your README.md changed.
 
-This project answers one question: since the point you last recorded as good, which files changed and which build/test targets does that invalidate? What you do with the answer is up to you. Run the affected tests, build the affected packages, deploy the affected services, or whatever you want.
+`what-changed` answers one question: since the point you last recorded as good, which files changed and which compile/build/test targets does that invalidate? What you do with the answer is up to you. Run the affected tests, build the affected packages, deploy the affected services, or whatever you want.
 
-It is built to be driven from a script that asks what changed, runs that, and records each target's baseline as that target passes. [`scripts/test-everything.sh`](scripts/test-everything.sh) in this repository is the test script that this project uses on itself.
+It is built to be driven from your shell script that runs `what-changed`, it then knows the targets that changed, it runs the compile/build/test for those targets. It then updates the the "good" baseline or each target that passses. [`scripts/test-everything.sh`](scripts/test-everything.sh) in an example of the "test everything script" this repository uses for its Git pre-commit hook.
 
 ## Why use it?
 
@@ -20,21 +27,21 @@ It is built to be driven from a script that asks what changed, runs that, and re
 
 **It is fast.** A warm check reads no file it has already seen: it stats each one and compares the modification time and size against what it recorded. See [docs/performance.md](docs/performance.md) for what that costs.
 
-**It reports files that no target watches.** A changed file that no target watches gets its own section in the output instead of being dropped. That is usually a gap in the config.
+**It reports files that no target watches.** A changed file that no target watches gets its own section in the output instead of being dropped. That is might be missing from your config.
 
 ## When not to use it
 
-**Your build tool already does this.** Nx, Turborepo and Bazel select affected targets from a real dependency graph. If you use one of those, use its own mechanism.
+**Your build tool already does this.** Nx, Turborepo and Bazel select affected targets from a real dependency graph. If you use one of those, use the mechanism it provides.
 
 **You need import-level accuracy.** Targets are matched by path, not by what imports what. Any change under a watched path runs that target, so it errs towards running too much.
 
-**What decides your work lives outside the working tree.** A new SDK, a changed environment variable or a rotated credential are all invisible to it. Installed dependencies are invisible too, though watching the lockfile covers that in practice.
+**It sees only files in your repo.** A new SDK, a changed environment variable or a rotated credential are all invisible to it. Installed dependencies are invisible too, though watching the lockfile covers that in practice.
 
 **The work is already cheap.** If what you want to skip is quick anyway, skipping it saves nothing and you have added a moving part.
 
 ## What it looks like
 
-It reports the changed files grouped under the targets they affect.
+It reports changed files grouped by target:
 
 ```bash
 $ what-changed summary
@@ -43,9 +50,11 @@ Changed since the baseline:
   compile: 2 changed
     M  a5e4d212f14f3cc1  src/parser/lexer.ts
     A  0f15384d18789b1e  src/parser/new.ts
+
   test: 2 changed
     M  a5e4d212f14f3cc1  src/parser/lexer.ts
     A  0f15384d18789b1e  src/parser/new.ts
+
   e2e: unchanged
 
   Watched by no target: 1 changed
@@ -54,13 +63,13 @@ Changed since the baseline:
 3 changed, 2196 file(s) checked.
 ```
 
-Note two things in that output. A file lands under every target that watches it, so one change can affect several targets. A changed file that **no** target watches is listed separately, because that is usually a gap in the config.
-
-For how it decides what changed, and why the recorded state is arranged the way it is, see [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). For what it costs, see [docs/performance.md](docs/performance.md). To build it yourself, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Some things to note:
+- One change can affect multiple targets.
+- A changed file under no target is listed separately.
 
 ## Install
 
-The easiest way to install is with [mise](https://mise.jdx.dev/) and a `mise.toml` for your project:
+The easiest way to install is with [mise](https://mise.jdx.dev/) and a `mise.toml` in your project:
 
 ```toml
 [tools]
@@ -88,9 +97,9 @@ chmod +x what-changed
    what-changed init
    ```
 
-   That writes a starter `what-changed.yaml` and adds `.what-changed/` to your `.gitignore`. Neither is overwritten: a config that is already there is left exactly as it is, and so is a `.gitignore` that already ignores `.what-changed/`.
+   That creates `what-changed.yaml` and adds `.what-changed/` to your `.gitignore`. Neither is overwritten: a config that is already there is left exactly as it is, and so is a `.gitignore` that already ignores `.what-changed/`.
 
-2. Edit the targets in the config it wrote. It cannot know what your project builds, so the two it writes are placeholders. A target names a build or test step and the paths whose content decides whether that step has to run again.
+2. Update the placeholders in `what-changed.yaml` to suit your project. Update, add or remote targets to match the specific build and test scripts in your project and the paths that contain your code.
 
    ```yaml
    always:
@@ -121,7 +130,7 @@ chmod +x what-changed
    what-changed summary
    ```
 
-   With no baseline recorded yet every target is reported, because nothing can be called unchanged.
+   With no baseline recorded yet, every target will be reported, because nothing can be called unchanged.
 
 4. Wire it into your build or test script. After a target's build or test passes, capture the baseline for that target:
 
@@ -129,13 +138,26 @@ chmod +x what-changed
    what-changed baseline capture test
    ```
 
-   Capturing the baseline is the only thing that moves it. It claims "this target passed against these files".
+   Capturing the baseline is the only thing that moves it forward. It claims "this target passed against these files".
 
    Chain it after your build or tests with `&&` so a failing build or test suite never captures the baseline:
 
    ```bash
    npm test && what-changed baseline capture test
    ```
+
+   You can hide it in your scripts so it just becomes automatic, for example in a package.json:
+
+   ```json
+   {
+       "scripts": {
+           "compile": "tsc && what-changed baseline capture compile",
+           "test": "jest && what-changed baseline capture test"
+       }
+   }
+   ```
+
+   Now any run of `npm test` that passes captures the baseline for the `test` target, however it was started.
 
 ## Commands
 
@@ -154,6 +176,8 @@ chmod +x what-changed
 | `what-changed cache reset` | Empty the file hash cache. The baseline is untouched |
 | `what-changed cache show` | Where the cache is and how much is in it |
 | `what-changed version` | The version, and the commit and date it was built from. Also `-v` / `--version` |
+
+Only `baseline capture` and `cache capture` write anything. Every other command can be run as often as you like and reports the same answer each time.
 
 Every subcommand that reads a config takes `--config <path>`. Without it the tool looks for `what-changed.yaml`, then `.yml`, then `.json` and uses the first it finds. `init` and `version` take no `--config`: neither of them reads one.
 
@@ -177,11 +201,9 @@ $ what-changed targets --output json
 
 `M` is modified, `A` added, `D` deleted, `U` unreadable. A deleted or unreadable file shows the hash it used to have.
 
-`U` means the file is there and could not be read, a permission problem most of the time. It counts as changed, because a file nobody can read cannot be called unchanged, and it will keep counting as changed on every run until it can be read again. It is reported as its own kind so that it does not read as a deletion.
+`U` means the file is there and something stopped it being read: a permission problem, a symlink loop, an I/O error. It counts as changed, because a file nobody can read cannot be called unchanged, and it will keep counting as changed on every run until it can be read again.
 
 `what-changed targets` prints nothing when nothing changed. With no baseline recorded it names every target, because nothing can be called unchanged yet.
-
-Only `baseline capture` and `cache capture` write anything. Every other command can be run as often as you like and reports the same answer each time.
 
 ### Exit codes
 
@@ -194,12 +216,14 @@ Only `baseline capture` and `cache capture` write anything. Every other command 
 
 ## Driving it from a "test everything" script
 
-This is your project's "test everything" script. It asks `what-changed targets` which targets have changes since the last successful test run and runs tests only for those targets:
+A good strategy is to have a "test everything" script that you can run from the command line and from your Git pre-commit hook. It invokes `what-changed targets` to find out which targets have changed since the last successful test run and runs tests only for those targets:
+
+todo: got here
 
 ```bash
 set -e
 
-# You implement this. It turns a target name from your config into the command that builds or tests it, and it must exit non-zero when that command fails.
+# Run the task for a target.
 run_target() {
     case "$1" in
         compile)  npm run build ;;
@@ -209,6 +233,7 @@ run_target() {
     esac
 }
 
+# Figure out which targets have changed.
 TARGETS=()
 while IFS= read -r LINE; do
     if [ -n "$LINE" ]; then
@@ -221,8 +246,7 @@ if [ ${#TARGETS[@]} -eq 0 ]; then
     exit 0
 fi
 
-# Nothing captures a baseline here. Each target's own command does that as its last step, so it
-# happens however the target was started.
+# Iterate and run targets.
 for TARGET_NAME in "${TARGETS[@]}"; do
     echo "Running: $TARGET_NAME"
     run_target "$TARGET_NAME"
@@ -230,16 +254,15 @@ done
 ```
 
 Two examples of that script live in this repository: 
-- [`scripts/test-everything.sh`](scripts/test-everything.sh): which this project runs on itself from its pre-commit hook
-- [`examples/example-project/scripts/test-everything.sh`](examples/example-project/scripts/test-everything.sh): part of the example Node.js project that demonstrates how to use what-changed.
+- [`scripts/test-everything.sh`](scripts/test-everything.sh): used in this project's Git pre-commit hook.
+- [`examples/example-project/scripts/test-everything.sh`](examples/example-project/scripts/test-everything.sh): example usage with a Node.js project.
 
 Each target captures its own baseline as the last step of its own command. In `package.json`:
 
 ```json
 {
     "scripts": {
-        "test": "node --test && what-changed baseline capture test",
-        "e2e": "playwright test && what-changed baseline capture e2e"
+        "test": "jest && what-changed baseline capture test"
     }
 }
 ```
@@ -270,11 +293,11 @@ You can use what-changed in your Git pre-commit hook to efficiently prevent brok
 
 Runnable examples of installling a Git pre-commit hook are available here:
 
-- The Node.js [example project](examples/example-project/), the smaller one to read first:
+- The small Node.js [example project](examples/example-project/):
   - [`.githooks/pre-commit`](examples/example-project/.githooks/pre-commit): the hook itself
   - [`scripts/install-hooks.sh`](examples/example-project/scripts/install-hooks.sh): step 2, wrapped in a script
   - [A walkthrough](examples/example-project/README.md#installing-the-pre-commit-hook) of what both do
-- This project, which uses the same arrangement on itself:
+- The setup in this project:
   - [`.githooks/pre-commit`](.githooks/pre-commit): the hook itself
   - [`scripts/install-hooks.sh`](scripts/install-hooks.sh): step 2, wrapped in a script
 
@@ -333,6 +356,10 @@ Some targets need a toolchain that only exists on one operating system. An iOS b
 
 ```yaml
 targets:
+  - name: test
+    paths:
+      - src
+
   - name: ios
     paths:
       - apps/ios-frontend
@@ -345,16 +372,26 @@ On platforms other than MacOS the `ios` target is automatically excluded.
 `what-changed summary` reports excluded targets as `wrong-platform` rather than `unchanged`, because the target was affected, but it could not run on this platform:
 
 ```
-  unit: 1 changed
-    M  a5e4d212f14f3cc1  apps/ios-frontend/App.swift
+$ what-changed summary
+Changed since the baseline:
+
+  test: 1 changed
+    M  5c4e538156299210  src/totals.ts
+    
   ios: wrong-platform
+
+1 changed, 4 file(s) checked.
 ```
 
 `what-changed targets list` names every target that can run on this platform, regardless of what changed. 
 
-## Development
+## Resources
 
-To build it from source, cross-compile it or run its tests, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+- [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md): how it decides what changed, and why the recorded state is arranged the way it is
+- [docs/performance.md](docs/performance.md): what a check costs
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): building it from source, cross-compiling it and running its tests
+- [examples/configs/](examples/configs/): the same config in YAML and JSON, with every field commented
+- [examples/example-project/](examples/example-project/): a small working project with the whole thing wired up
 
 ## License
 

@@ -43,8 +43,8 @@ The baseline holds one record per target rather than one snapshot of the whole t
 Examples of capturing the baseline for example targets `compile` and `test`:
 
 ```bash
-zig build      && what-changed baseline capture compile
-zig build test && what-changed baseline capture test
+npm run build && what-changed baseline capture compile
+jest          && what-changed baseline capture test
 ```
 
 The cache sits in its own subdirectory, so `cache reset` touches only the cache and `baseline reset` touches only the baseline. Deleting `.what-changed/` by hand takes both, so the next run reports every file as new and every target runs.
