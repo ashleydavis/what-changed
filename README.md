@@ -2,6 +2,8 @@
 
 A small self-contained executable that reports which files have changed since a recorded baseline and which of your project's targets those changes fall under.
 
+Point your AI agent at [docs/AI-QUICK-REF.md](docs/AI-QUICK-REF.md) to get started.
+
 ## Motivation
 
 - I want to let AI run autonomously, but it tends to forget to test and broken commits pile up.
@@ -177,7 +179,9 @@ chmod +x what-changed
 | `what-changed cache show` | Where the cache is and how much is in it |
 | `what-changed version` | The version, and the commit and date it was built from. Also `-v` / `--version` |
 
-Only `baseline capture` and `cache capture` write anything. Every other command can be run as often as you like and reports the same answer each time.
+Only `baseline capture` and `baseline reset` change what a later report says. Every other command can be run as often as you like and reports the same answer each time.
+
+They are not the only commands that write, though. `init` writes your config and `.gitignore`. `summary`, `changes` and `targets` each refresh the file hash cache as they go, as do `cache capture` and `cache reset`, but nothing in the cache affects the answer, only how long it takes to arrive. The `show` commands and `version` write nothing at all.
 
 Every subcommand that reads a config takes `--config <path>`. Without it the tool looks for `what-changed.yaml`, then `.yml`, then `.json` and uses the first it finds. `init` and `version` take no `--config`: neither of them reads one.
 
@@ -387,6 +391,7 @@ Changed since the baseline:
 
 ## Resources
 
+- [docs/AI-QUICK-REF.md](docs/AI-QUICK-REF.md): setup and usage condensed for an AI agent
 - [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md): how it decides what changed, and why the recorded state is arranged the way it is
 - [docs/performance.md](docs/performance.md): what a check costs
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): building it from source, cross-compiling it and running its tests
