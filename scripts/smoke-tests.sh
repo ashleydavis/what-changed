@@ -723,10 +723,14 @@ done
 
 scenario "39. A file that cannot be read says why, rather than only that it could not be read"
 
-# chmod is the only way to make a real file unreadable, and it does nothing to root, so this one
-# scenario is skipped there rather than failing for a reason that has nothing to do with the tool.
+# chmod is the only way to make a real file unreadable, and there are two places it cannot: as root,
+# where it is not enforced, and on Windows, where it does not control read access at all. In both the
+# file stays readable, the tool reports it as an ordinary added file, and the scenario would fail for
+# a reason that has nothing to do with the tool. So it is skipped in both rather than run.
 if [ "$(id -u)" = "0" ]; then
     echo -e "  ${YELLOW}SKIP${NC} running as root, where chmod cannot make a file unreadable"
+elif [ "${OS:-}" = "Windows_NT" ]; then
+    echo -e "  ${YELLOW}SKIP${NC} on Windows, where chmod cannot make a file unreadable"
 else
     {
         echo "targets:"
