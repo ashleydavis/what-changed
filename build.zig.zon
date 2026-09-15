@@ -13,8 +13,8 @@
     // Identifies the package to the build system. Generated once and never changed.
     .dependencies = .{
         .faultline = .{
-            .url = "git+https://github.com/ashleydavis/faultline#be422ececbc69d10b2592d21e27154193e03c737",
-            .hash = "faultline-0.0.0-1QwBxAhJCgBhGtR8gXCNn509TQeUFUTOQCRc1dayUvV6",
+            .url = "git+https://github.com/ashleydavis/faultline#87612bf8203f4d5bca74d8a1fc2b76eeed55ba94",
+            .hash = "faultline-0.0.0-1QwBxOxKCgA0vSUFmnWGDahSMrnA8E_0b67d2adAMknl",
         },
     },
     .fingerprint = 0xe0e32710211445a8,
