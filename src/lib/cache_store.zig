@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const files = @import("files.zig");
 const value = @import("value.zig");
 const json = @import("json.zig");
@@ -33,9 +42,9 @@ pub const Cache = struct {
 // parse or is not a plain object all yield empty structures rather than an error: a damaged cache
 // should cost a slow run, never a blocked one.
 //
-pub fn loadCache(io: std.Io, allocator: std.mem.Allocator, cache_dir: []const u8) std.mem.Allocator.Error!Cache {
+pub fn loadCache(io: std.Io, allocator: std.mem.Allocator, cache_dir: []const u8, log: Log) std.mem.Allocator.Error!Cache {
     const path = try files.joinPath(allocator, &.{ cache_dir, FILE_HASHES_NAME });
-    return .{ .file_hashes = try file_hash.cacheFromValue(allocator, (try readJsonObject(io, allocator, path)).contentOrNull()) };
+    return .{ .file_hashes = try file_hash.cacheFromValue(allocator, (try readJsonObject(io, allocator, path, log)).contentOrNull(), log) };
 }
 
 //
@@ -107,14 +116,19 @@ pub const JsonObjectFile = union(enum) {
 //
 // Reads a JSON object from a file, saying which of the four ways it failed when it did.
 //
-pub fn readJsonObject(io: std.Io, allocator: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error!JsonObjectFile {
+pub fn readJsonObject(io: std.Io, allocator: std.mem.Allocator, path: []const u8, log: Log) std.mem.Allocator.Error!JsonObjectFile {
     const text = files.readFile(io, allocator, path) catch |err| {
+        if (an) annotate(log, "readJsonObject-cannot-be-read", "", .{});
         return if (err == error.FileNotFound) .absent else .{ .unreadable = err };
     };
 
-    const parsed = json.parse(allocator, text) catch return .not_json;
+    const parsed = json.parse(allocator, text, log) catch {
+        if (an) annotate(log, "readJsonObject-not-json", "", .{});
+        return .not_json;
+    };
 
     if (!value.isPlainObject(parsed)) {
+        if (an) annotate(log, "readJsonObject-not-an-object", "", .{});
         return .not_an_object;
     }
     return .{ .object = parsed };
@@ -123,9 +137,9 @@ pub fn readJsonObject(io: std.Io, allocator: std.mem.Allocator, path: []const u8
 //
 // Writes the per-file hashes, creating the cache directory if it is not there yet.
 //
-pub fn saveFileHashes(io: std.Io, allocator: std.mem.Allocator, cache_dir: []const u8, hashes: *const FileHashCache) !void {
+pub fn saveFileHashes(io: std.Io, allocator: std.mem.Allocator, cache_dir: []const u8, hashes: *const FileHashCache, log: Log) !void {
     const path = try files.joinPath(allocator, &.{ cache_dir, FILE_HASHES_NAME });
-    try writeJsonFile(io, allocator, path, try file_hash.cacheToValue(allocator, hashes));
+    try writeJsonFile(io, allocator, path, try file_hash.cacheToValue(allocator, hashes, log), log);
 }
 
 //
@@ -138,7 +152,7 @@ pub fn saveFileHashes(io: std.Io, allocator: std.mem.Allocator, cache_dir: []con
 // fought over it, and the second to rename found the first had already moved it away and failed with
 // ENOENT. A name per writer means each renames its own file and the last one wins.
 //
-pub fn writeJsonFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, contents: Value) !void {
+pub fn writeJsonFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, contents: Value, log: Log) !void {
     try files.makeParentDir(io, path);
 
     const temporary_path = try std.fmt.allocPrint(allocator, "{s}.{s}.tmp", .{ path, try randomName(io, allocator) });
@@ -147,9 +161,11 @@ pub fn writeJsonFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8,
     // Tidy-up on a write that already failed, so the reason it failed is the one worth reporting and
     // a stray temporary file is worth nothing next to it.
     //
-    errdefer files.removeFile(io, temporary_path) catch {};
+    errdefer files.removeFile(io, temporary_path) catch {
+        if (an) annotate(log, "writeJsonFile-temporary-file-left-behind", "", .{});
+    };
 
-    try files.writeFile(io, temporary_path, try json.stringify(allocator, contents));
+    try files.writeFile(io, temporary_path, try json.stringify(allocator, contents, log));
     try files.renameFile(io, temporary_path, path);
 }
 
@@ -190,18 +206,28 @@ pub const LOCK_STALE_MS = 60000;
 // create it and fails every other with "already exists", so there is no window in which two writers
 // both believe they have it.
 //
-pub fn takeUpdateLock(io: std.Io, lock_path: []const u8) !void {
+pub fn takeUpdateLock(io: std.Io, lock_path: []const u8, log: Log) !void {
     var attempt: usize = 0;
     while (attempt < LOCK_ATTEMPTS) : (attempt += 1) {
+        if (an) annotate(log, "takeUpdateLock-attempts-iteration", "", .{});
         if (files.createFileExclusive(io, lock_path)) {
+            if (an) annotate(log, "takeUpdateLock-taken", "", .{});
             return;
-        } else |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
+        } else |err| {
+            if (an) annotate(log, "takeUpdateLock-not-taken", "", .{});
+            switch (err) {
+                error.PathAlreadyExists => {
+                    if (an) annotate(log, "takeUpdateLock-held-by-somebody-else", "", .{});
+                },
+                else => {
+                    if (an) annotate(log, "takeUpdateLock-cannot-be-created", "", .{});
+                    return err;
+                },
+            }
         }
 
-        clearAbandonedLock(io, lock_path);
-        files.sleepMs(io, LOCK_RETRY_MS);
+        clearAbandonedLock(io, lock_path, log);
+        files.sleepMs(io, LOCK_RETRY_MS, log);
     }
 
     return error.LockTimeout;
@@ -211,16 +237,23 @@ pub fn takeUpdateLock(io: std.Io, lock_path: []const u8) !void {
 // Removes a lock file old enough that whoever made it cannot still be working, so one killed process
 // does not block every later one for good.
 //
-pub fn clearAbandonedLock(io: std.Io, lock_path: []const u8) void {
-    const stat = files.statFile(io, lock_path) catch return; // Already gone, which is what is wanted.
+pub fn clearAbandonedLock(io: std.Io, lock_path: []const u8, log: Log) void {
+    // Already gone, which is what is wanted.
+    const stat = files.statFile(io, lock_path) catch {
+        if (an) annotate(log, "clearAbandonedLock-already-gone", "", .{});
+        return;
+    };
 
     const now_ms = files.nowMs(io);
     if (now_ms - stat.mtime_ms > LOCK_STALE_MS) {
+        if (an) annotate(log, "clearAbandonedLock-abandoned", "", .{});
         //
         // A failed take-over just means the next attempt tries again a moment later, and the caller
         // is already in a retry loop, so there is nobody here to tell.
         //
-        files.removeFile(io, lock_path) catch {};
+        files.removeFile(io, lock_path) catch {
+            if (an) annotate(log, "clearAbandonedLock-will-not-delete", "", .{});
+        };
     }
 }
 
@@ -234,9 +267,13 @@ pub fn clearAbandonedLock(io: std.Io, lock_path: []const u8) void {
 // user deleted it as the timeout message tells them to, and either way it is not there to block
 // anyone.
 //
-pub fn releaseUpdateLock(io: std.Io, lock_path: []const u8) !void {
+pub fn releaseUpdateLock(io: std.Io, lock_path: []const u8, log: Log) !void {
     files.removeFile(io, lock_path) catch |err| {
-        if (err != error.FileNotFound) return err;
+        if (an) annotate(log, "releaseUpdateLock-will-not-delete", "", .{});
+        if (err != error.FileNotFound) {
+            if (an) annotate(log, "releaseUpdateLock-still-there", "", .{});
+            return err;
+        }
     };
 }
 
@@ -258,16 +295,23 @@ pub fn updateJsonFile(
     fail: *failure.Failure,
 ) failure.Error!void {
     files.makeParentDir(io, path) catch |err| {
+        if (an) annotate(fail.log, "updateJsonFile-no-directory", "", .{});
         return fail.set("Failed to create the directory for \"{s}\": {s}", .{ path, files.describeError(err) });
     };
 
     const lock_path = try std.fmt.allocPrint(allocator, "{s}.lock", .{path});
-    takeUpdateLock(io, lock_path) catch |err| switch (err) {
-        error.LockTimeout => return fail.set(
-            "Gave up waiting for the update lock at \"{s}\" after {d}s. Delete it if no other run is going.",
-            .{ lock_path, (LOCK_ATTEMPTS * LOCK_RETRY_MS) / 1000 },
-        ),
-        else => return fail.set("Failed to take the update lock at \"{s}\": {s}", .{ lock_path, files.describeError(err) }),
+    takeUpdateLock(io, lock_path, fail.log) catch |err| switch (err) {
+        error.LockTimeout => {
+            if (an) annotate(fail.log, "updateJsonFile-lock-timed-out", "", .{});
+            return fail.set(
+                "Gave up waiting for the update lock at \"{s}\" after {d}s. Delete it if no other run is going.",
+                .{ lock_path, (LOCK_ATTEMPTS * LOCK_RETRY_MS) / 1000 },
+            );
+        },
+        else => {
+            if (an) annotate(fail.log, "updateJsonFile-lock-refused", "", .{});
+            return fail.set("Failed to take the update lock at \"{s}\": {s}", .{ lock_path, files.describeError(err) });
+        },
     };
 
     //
@@ -277,7 +321,8 @@ pub fn updateJsonFile(
     //
     const changed = changeJsonFile(io, allocator, path, context, mutate, fail);
 
-    releaseUpdateLock(io, lock_path) catch |err| {
+    releaseUpdateLock(io, lock_path, fail.log) catch |err| {
+        if (an) annotate(fail.log, "updateJsonFile-lock-stranded", "", .{});
         //
         // A change that failed has already filled in `fail` with the reason, and that is what the
         // caller asked about, so it wins over a stranded lock.
@@ -307,7 +352,7 @@ fn changeJsonFile(
     comptime mutate: fn (@TypeOf(context), std.mem.Allocator, Value) std.mem.Allocator.Error!Value,
     fail: *failure.Failure,
 ) failure.Error!void {
-    const source = try readJsonObject(io, allocator, path);
+    const source = try readJsonObject(io, allocator, path, fail.log);
 
     //
     // A file that is there and cannot be read holds data nobody can see, and the change is built on
@@ -317,13 +362,15 @@ fn changeJsonFile(
     // lost it, so writing over it is the way back.
     //
     if (source == .unreadable) {
+        if (an) annotate(fail.log, "changeJsonFile-refused", "", .{});
         return fail.set(
             "Refused to write \"{s}\": the file is there and could not be read: {s}. Writing would overwrite what it holds. Fix its permissions, or delete it and capture again.",
             .{ path, files.describeError(source.unreadable) },
         );
     }
 
-    writeJsonFile(io, allocator, path, try mutate(context, allocator, source.contentOrNull())) catch |err| {
+    writeJsonFile(io, allocator, path, try mutate(context, allocator, source.contentOrNull()), fail.log) catch |err| {
+        if (an) annotate(fail.log, "changeJsonFile-cannot-be-written", "", .{});
         return fail.set("Failed to write \"{s}\": {s}", .{ path, files.describeError(err) });
     };
 }
@@ -335,25 +382,28 @@ fn changeJsonFile(
 // treats empty and absent the same way, and a write cannot go wrong the way a delete of a computed
 // path can: if the path were ever empty or wrong, a delete would take something real with it.
 //
-pub fn cacheReset(io: std.Io, allocator: std.mem.Allocator, cache_dir: []const u8) !void {
+pub fn cacheReset(io: std.Io, allocator: std.mem.Allocator, cache_dir: []const u8, log: Log) !void {
     const empty: FileHashCache = .empty;
-    try saveFileHashes(io, allocator, cache_dir, &empty);
+    try saveFileHashes(io, allocator, cache_dir, &empty, log);
 }
 
 //
 // Returns a copy of the file hash cache holding only the paths that still exist, so entries for
 // deleted files do not accumulate for the life of the checkout.
 //
-pub fn pruneFileHashes(allocator: std.mem.Allocator, hashes: *const FileHashCache, current_paths: []const []const u8) std.mem.Allocator.Error!FileHashCache {
+pub fn pruneFileHashes(allocator: std.mem.Allocator, hashes: *const FileHashCache, current_paths: []const []const u8, log: Log) std.mem.Allocator.Error!FileHashCache {
     var keep: std.StringArrayHashMapUnmanaged(void) = .empty;
     for (current_paths) |path| {
+        if (an) annotate(log, "pruneFileHashes-current-iteration", "", .{});
         try keep.put(allocator, path, {});
     }
 
     var pruned: FileHashCache = .empty;
     var walker = hashes.iterator();
     while (walker.next()) |entry| {
+        if (an) annotate(log, "pruneFileHashes-cached-iteration", "", .{});
         if (keep.contains(entry.key_ptr.*)) {
+            if (an) annotate(log, "pruneFileHashes-still-there", "", .{});
             try pruned.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
     }

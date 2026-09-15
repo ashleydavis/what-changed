@@ -2,11 +2,11 @@ const std = @import("std");
 const baseline = @import("baseline.zig");
 const commander = wc.commander;
 const testing = std.testing;
-const harness = @import("harness.zig");
+const harness = @import("test/harness.zig");
 const wc = @import("what-changed");
 
 test "resolveBaselinePath resolves the config's path against the config's directory" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.write("what-changed.yaml", "baselinePath: recorded/base.json\ntargets:\n  - name: unit\n    paths:\n      - src\n");
@@ -18,7 +18,7 @@ test "resolveBaselinePath resolves the config's path against the config's direct
 }
 
 test "resolveBaselinePath falls back to the default location" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
@@ -28,7 +28,7 @@ test "resolveBaselinePath falls back to the default location" {
 }
 
 test "baselineShowCommand says nothing is captured when nothing is" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
@@ -40,7 +40,7 @@ test "baselineShowCommand says nothing is captured when nothing is" {
 }
 
 test "baselineShowCommand says a damaged baseline is there rather than never captured" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
@@ -58,7 +58,7 @@ test "baselineShowCommand says a damaged baseline is there rather than never cap
 }
 
 test "baselineShowCommand says a baseline holding the wrong kind of JSON is there" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
@@ -70,7 +70,7 @@ test "baselineShowCommand says a baseline holding the wrong kind of JSON is ther
 }
 
 test "baselineShowCommand reports the file's status in json" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
@@ -86,7 +86,7 @@ test "baselineShowCommand reports the file's status in json" {
     // A project that has captured nothing reports "absent", so a script can tell the two apart the
     // same way the text output does.
     //
-    var fresh = try harness.Scenario.create();
+    var fresh = try harness.Scenario.create(std.testing.allocator, .{});
     defer fresh.destroy();
     try fresh.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
 
@@ -96,7 +96,7 @@ test "baselineShowCommand reports the file's status in json" {
 }
 
 test "baselineShowCommand counts each captured target, in name order" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project("targets:\n  - name: unit\n    paths:\n      - src\n  - name: docs\n    paths:\n      - documentation\n", &.{
@@ -116,7 +116,7 @@ test "baselineShowCommand counts each captured target, in name order" {
 }
 
 test "baselineShowCommand renders json when asked" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project("targets:\n  - name: unit\n    paths:\n      - src\n", &.{.{ "src/a.ts", "one" }});
@@ -132,7 +132,7 @@ test "baselineShowCommand renders json when asked" {
 }
 
 test "baselineResetCommand empties the baseline and says so" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project("targets:\n  - name: unit\n    paths:\n      - src\n", &.{.{ "src/a.ts", "one" }});
@@ -150,7 +150,7 @@ test "baselineResetCommand empties the baseline and says so" {
 }
 
 test "baselineResetCommand leaves the file behind rather than deleting it" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project("targets:\n  - name: unit\n    paths:\n      - src\n", &.{.{ "src/a.ts", "one" }});
@@ -166,7 +166,7 @@ test "baselineResetCommand leaves the file behind rather than deleting it" {
 }
 
 test "baselineSetCommand hands the names through to the run" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project("targets:\n  - name: unit\n    paths:\n      - src\n  - name: docs\n    paths:\n      - documentation\n", &.{
@@ -180,7 +180,7 @@ test "baselineSetCommand hands the names through to the run" {
 }
 
 test "baselineCommand declares capture, reset and show, with capture's aliases" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
@@ -203,7 +203,7 @@ test "baselineCommand declares capture, reset and show, with capture's aliases" 
 }
 
 test "baseline capture takes its target names through the parser" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project("targets:\n  - name: unit\n    paths:\n      - src\n  - name: docs\n    paths:\n      - documentation\n", &.{
@@ -222,7 +222,7 @@ test "baseline capture takes its target names through the parser" {
 }
 
 test "the capture help warns against capturing a suite that did not run" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();

@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const builtin = @import("builtin");
 const wc = @import("what-changed");
 
@@ -51,7 +60,7 @@ const HELP_EXAMPLES =
 // Builds the whole command line: the program, its options, and every subcommand.
 //
 pub fn buildProgram(context: *const Context) *commander.Command {
-    const program = commander.program(context.allocator)
+    const program = commander.program(context.allocator, context.fail.log)
         .name("what-changed")
         .description("Reports which files have changed since the recorded baseline, and which of the project's targets those changes fall under.")
         //
@@ -79,7 +88,17 @@ pub fn buildProgram(context: *const Context) *commander.Command {
     return program;
 }
 
+//
+// Where `main` marks its own branches.
+//
+// A value here rather than a parameter, which is what everything below it takes: `main`'s signature
+// is the one Zig hands the process, so there is nowhere to pass one in. Nothing reads it in the
+// binary people run, where the markers compile out entirely.
+//
+pub var entry_log: Log = .{};
+
 pub fn main(init: std.process.Init) u8 {
+    const log = entry_log;
     //
     // One arena for the whole run, freed on the way out.
     //
@@ -90,13 +109,17 @@ pub fn main(init: std.process.Init) u8 {
     const allocator = init.arena.allocator();
 
     var stdout_file = std.Io.File.stdout().writer(init.io, &.{});
-    var out = Output{ .writer = &stdout_file.interface };
+    var out = Output{ .writer = &stdout_file.interface, .log = log };
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, log);
 
     const exit_code = run(init, allocator, &out, &fail) catch |err| blk: {
+        if (an) annotate(log, "main-the-run-failed", "", .{});
         if (err == error.OutOfMemory and fail.message == null) {
-            _ = fail.set("what-changed ran out of memory.", .{}) catch {};
+            if (an) annotate(log, "main-out-of-memory-with-nothing-said", "", .{});
+            _ = fail.set("what-changed ran out of memory.", .{}) catch {
+                if (an) annotate(log, "main-no-room-to-say-so", "", .{});
+            };
         }
 
         var stderr_file = std.Io.File.stderr().writer(init.io, &.{});
@@ -108,8 +131,11 @@ pub fn main(init: std.process.Init) u8 {
     // however well the work behind it went.
     //
     if (out.failed) {
+        if (an) annotate(log, "main-output-never-arrived", "", .{});
         var stderr_file = std.Io.File.stderr().writer(init.io, &.{});
-        stderr_file.interface.writeAll("what-changed could not write its output.\n") catch {};
+        stderr_file.interface.writeAll("what-changed could not write its output.\n") catch {
+            if (an) annotate(log, "main-nowhere-to-say-so", "", .{});
+        };
         return 1;
     }
 
@@ -125,15 +151,22 @@ pub fn main(init: std.process.Init) u8 {
 //
 //
 pub fn reportFailure(fail: *Failure, writer: *std.Io.Writer) u8 {
-    writer.print("{s}\n", .{fail.text()}) catch {};
+    writer.print("{s}\n", .{fail.text()}) catch {
+        if (an) annotate(fail.log, "reportFailure-nowhere-to-print", "", .{});
+    };
     return 1;
 }
 
 //
 // Builds the command line and runs whatever it asked for.
 //
-fn run(init: std.process.Init, allocator: std.mem.Allocator, out: *Output, fail: *Failure) wc.failure.Error!u8 {
+// Public so it can be driven with a process of its own making: `main` below is the process, and
+// everything this decides is decided here rather than there.
+//
+pub fn run(init: std.process.Init, allocator: std.mem.Allocator, out: *Output, fail: *Failure) wc.failure.Error!u8 {
+    const log = fail.log;
     const argv = init.minimal.args.toSlice(allocator) catch |err| {
+        if (an) annotate(log, "run-no-command-line", "", .{});
         return fail.set("Failed to read the command line: {s}", .{@errorName(err)});
     };
 
@@ -144,10 +177,12 @@ fn run(init: std.process.Init, allocator: std.mem.Allocator, out: *Output, fail:
 
     var widened: std.ArrayList([]const u8) = .empty;
     for (arguments) |argument| {
+        if (an) annotate(log, "run-arguments-iteration", "", .{});
         try widened.append(allocator, argument);
     }
 
     const cwd = std.process.currentPathAlloc(init.io, allocator) catch |err| {
+        if (an) annotate(log, "run-no-working-directory", "", .{});
         return fail.set("Failed to read the working directory: {s}", .{wc.files.describeError(err)});
     };
 
@@ -166,7 +201,7 @@ fn run(init: std.process.Init, allocator: std.mem.Allocator, out: *Output, fail:
         .environ = init.environ_map,
         .cwd = cwd,
         .list_files = wc.list_files.listRepoFiles,
-        .platform = platformName(),
+        .platform = platformName(builtin.os.tag),
         .out = out,
         .fail = fail,
     };
@@ -179,43 +214,57 @@ fn run(init: std.process.Init, allocator: std.mem.Allocator, out: *Output, fail:
     // not ask for and cannot see coming.
     //
     if (widened.items.len == 0) {
+        if (an) annotate(log, "run-nothing-asked-for", "", .{});
         try commander.writeHelp(out.writer, program, allocator);
         return 0;
     }
 
-    var runner = commander.Program{ .out = out.writer };
+    var runner = commander.Program{ .out = out.writer, .log = log };
     commander.parse(&runner, program, widened.items) catch |err| switch (err) {
         //
         // Help and the version printed successfully, which is not a failure.
         //
-        error.Displayed => return 0,
+        error.Displayed => {
+            if (an) annotate(log, "run-help-or-version-printed", "", .{});
+            return 0;
+        },
 
         //
         // Either the command line was wrong, in which case the parser left the message, or an action
         // failed, in which case it left one of its own.
         //
         error.Refused => {
+            if (an) annotate(log, "run-refused", "", .{});
             if (runner.message) |message| {
-                _ = fail.set("{s}", .{message}) catch {};
+                if (an) annotate(log, "run-the-parser-said-why", "", .{});
+                _ = fail.set("{s}", .{message}) catch {
+                    if (an) annotate(log, "run-no-room-to-record-why", "", .{});
+                };
             }
             return error.Failed;
         },
 
-        error.OutOfMemory => return error.OutOfMemory,
+        error.OutOfMemory => {
+            if (an) annotate(log, "run-no-room", "", .{});
+            return error.OutOfMemory;
+        },
     };
 
     return runner.exit_code;
 }
 
 //
-// What this platform is called in a config's "platforms" list.
+// What a platform is called in a config's "platforms" list.
+//
+// The tag is a parameter rather than read from `builtin` here, so this answers the question for any
+// platform rather than only the one it was built for. `run` passes the one this build is for.
 //
 // The names are Node's, from `process.platform`, rather than Zig's own, because that is what the
 // config files in the wild were written against. Changing them would silently stop every target
 // with a `platforms` list from matching.
 //
-pub fn platformName() []const u8 {
-    return switch (builtin.os.tag) {
+pub fn platformName(tag: std.Target.Os.Tag) []const u8 {
+    return switch (tag) {
         .linux => "linux",
         .macos => "darwin",
         .windows => "win32",
@@ -224,7 +273,7 @@ pub fn platformName() []const u8 {
         .netbsd => "netbsd",
         .dragonfly => "dragonfly",
         .illumos => "sunos",
-        else => @tagName(builtin.os.tag),
+        else => @tagName(tag),
     };
 }
 

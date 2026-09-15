@@ -11,6 +11,12 @@
     .minimum_zig_version = "0.16.0",
 
     // Identifies the package to the build system. Generated once and never changed.
+    .dependencies = .{
+        .faultline = .{
+            .url = "git+https://github.com/ashleydavis/faultline#be422ececbc69d10b2592d21e27154193e03c737",
+            .hash = "faultline-0.0.0-1QwBxAhJCgBhGtR8gXCNn509TQeUFUTOQCRc1dayUvV6",
+        },
+    },
     .fingerprint = 0xe0e32710211445a8,
 
     // What goes into a package of this project. Everything else (build outputs, throwaway trees)

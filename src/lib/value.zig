@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 
 //
 // The value used wherever the structure is not known at compile time.
@@ -90,13 +99,19 @@ pub fn isPlainObject(value: Value) bool {
 // A missing field renders as "undefined" rather than "null", so a config that leaves a field out
 // entirely reads as `got undefined`, which is a different complaint from one that set it to null.
 //
-pub fn describe(allocator: std.mem.Allocator, value: ?Value) std.mem.Allocator.Error![]const u8 {
-    const present = value orelse return allocator.dupe(u8, "undefined");
+pub fn describe(allocator: std.mem.Allocator, value: ?Value, log: Log) std.mem.Allocator.Error![]const u8 {
+    const present = value orelse {
+        if (an) annotate(log, "describe-absent", "", .{});
+        return allocator.dupe(u8, "undefined");
+    };
 
     var rendered = std.Io.Writer.Allocating.init(allocator);
     errdefer rendered.deinit();
 
-    std.json.Stringify.value(present, .{}, &rendered.writer) catch return error.OutOfMemory;
+    std.json.Stringify.value(present, .{}, &rendered.writer) catch {
+        if (an) annotate(log, "describe-no-room", "", .{});
+        return error.OutOfMemory;
+    };
     return rendered.toOwnedSlice();
 }
 

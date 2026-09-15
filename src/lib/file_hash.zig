@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const files = @import("files.zig");
 const value = @import("value.zig");
 const file_hashes = @import("file_hashes.zig");
@@ -79,18 +88,26 @@ pub const HashedFile = union(enum) {
 // Hashes one file's content, reading it only when the cached entry no longer matches the file's
 // modification time and size.
 //
-pub fn hashFile(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, relative_path: []const u8, cache: *FileHashCache) std.mem.Allocator.Error!HashedFile {
+pub fn hashFile(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, relative_path: []const u8, cache: *FileHashCache, log: Log) std.mem.Allocator.Error!HashedFile {
     const full_path = try files.joinPath(allocator, &.{ root_dir, relative_path });
 
-    const stat = files.statFile(io, full_path) catch |err| return whyNot(err);
+    const stat = files.statFile(io, full_path) catch |err| {
+        if (an) annotate(log, "hashFile-cannot-be-stat-ed", "", .{});
+        return whyNot(err);
+    };
 
     if (cache.get(relative_path)) |cached| {
+        if (an) annotate(log, "hashFile-cached", "", .{});
         if (cached.mtime_ms == stat.mtime_ms and cached.size == stat.size) {
+            if (an) annotate(log, "hashFile-cache-still-matches", "", .{});
             return .{ .hashed = cached.hash };
         }
     }
 
-    const hash = hashFileContent(io, allocator, full_path) catch |err| return whyNot(err);
+    const hash = hashFileContent(io, allocator, full_path, log) catch |err| {
+        if (an) annotate(log, "hashFile-cannot-be-read", "", .{});
+        return whyNot(err);
+    };
 
     //
     // The key is copied because the cache outlives the file list it came from when the caller reuses
@@ -120,7 +137,7 @@ fn whyNot(err: anyerror) HashedFile {
 //
 // Reads a file and returns the SHA-256 hex digest of its content.
 //
-pub fn hashFileContent(io: std.Io, allocator: std.mem.Allocator, full_path: []const u8) ![]const u8 {
+pub fn hashFileContent(io: std.Io, allocator: std.mem.Allocator, full_path: []const u8, log: Log) ![]const u8 {
     const file = try files.openFile(io, full_path);
     defer files.closeFile(io, file);
 
@@ -134,6 +151,7 @@ pub fn hashFileContent(io: std.Io, allocator: std.mem.Allocator, full_path: []co
     var chunk: [READ_BUFFER_BYTES]u8 = undefined;
     var reader = files.fileReader(io, file, &reader_buffer);
     while (true) {
+        if (an) annotate(log, "hashFileContent-chunks-iteration", "", .{});
         //
         // A short read is how the end of the file arrives, so it is not an error and does not appear
         // here. `ReadFailed` is a real failure part way through, and it is returned rather than
@@ -141,8 +159,15 @@ pub fn hashFileContent(io: std.Io, allocator: std.mem.Allocator, full_path: []co
         // that failed at byte one would hash as empty and report as modified rather than unreadable.
         // The reader keeps the error that caused it, which is what makes the reason worth printing.
         //
-        const read = reader.interface.readSliceShort(&chunk) catch return reader.err orelse error.ReadFailed;
-        if (read == 0) break;
+        const read = reader.interface.readSliceShort(&chunk) catch {
+            if (an) annotate(log, "hashFileContent-read-failed", "", .{});
+            // The reader keeps whatever stopped it, so a read that failed always has a reason.
+            return reader.err orelse unreachable;
+        };
+        if (read == 0) {
+            if (an) annotate(log, "hashFileContent-end-of-file", "", .{});
+            break;
+        }
         digest.update(chunk[0..read]);
     }
 
@@ -205,20 +230,29 @@ pub const HashedFiles = struct {
 // steady state this is one stat per file, so there is no throughput to win and no file-descriptor
 // ceiling to reason about.
 //
-pub fn hashFiles(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, relative_paths: []const []const u8, cache: *FileHashCache) std.mem.Allocator.Error!HashedFiles {
+pub fn hashFiles(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, relative_paths: []const []const u8, cache: *FileHashCache, log: Log) std.mem.Allocator.Error!HashedFiles {
     var hashes: FileHashes = .empty;
     try hashes.ensureTotalCapacity(allocator, relative_paths.len);
 
     var unreadable: std.ArrayList(UnreadableFile) = .empty;
 
     for (relative_paths) |relative_path| {
-        switch (try hashFile(io, allocator, root_dir, relative_path, cache)) {
-            .hashed => |hash| try hashes.put(allocator, relative_path, hash),
-            .gone => {},
-            .unreadable => |err| try unreadable.append(allocator, .{
-                .path = relative_path,
-                .reason = files.describeError(err),
-            }),
+        if (an) annotate(log, "hashFiles-paths-iteration", "", .{});
+        switch (try hashFile(io, allocator, root_dir, relative_path, cache, log)) {
+            .hashed => |hash| {
+                if (an) annotate(log, "hashFiles-hashed", "", .{});
+                try hashes.put(allocator, relative_path, hash);
+            },
+            .gone => {
+                if (an) annotate(log, "hashFiles-gone", "", .{});
+            },
+            .unreadable => |err| {
+                if (an) annotate(log, "hashFiles-unreadable", "", .{});
+                try unreadable.append(allocator, .{
+                    .path = relative_path,
+                    .reason = files.describeError(err),
+                });
+            },
         }
     }
 
@@ -228,12 +262,13 @@ pub fn hashFiles(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8,
 //
 // Turns the cache into the JSON object it is stored as, with the paths in sorted order.
 //
-pub fn cacheToValue(allocator: std.mem.Allocator, cache: *const FileHashCache) std.mem.Allocator.Error!value.Value {
+pub fn cacheToValue(allocator: std.mem.Allocator, cache: *const FileHashCache, log: Log) std.mem.Allocator.Error!value.Value {
     const keys = try allocator.dupe([]const u8, cache.keys());
-    std.mem.sort([]const u8, keys, {}, file_hashes.lessThanPath);
+    std.mem.sort([]const u8, keys, file_hashes.Ordering{ .log = log }, file_hashes.lessThanPath);
 
     var object: value.Object = .empty;
     for (keys) |path| {
+        if (an) annotate(log, "cacheToValue-paths-iteration", "", .{});
         const entry = cache.get(path).?;
         var record: value.Object = .empty;
         try record.put(allocator, "mtimeMs", .{ .float = entry.mtime_ms });
@@ -252,32 +287,57 @@ pub fn cacheToValue(allocator: std.mem.Allocator, cache: *const FileHashCache) s
 // cost one slow run, never a blocked one, which is the whole reason it is kept apart from the
 // baseline.
 //
-pub fn cacheFromValue(allocator: std.mem.Allocator, parsed: value.Value) std.mem.Allocator.Error!FileHashCache {
+pub fn cacheFromValue(allocator: std.mem.Allocator, parsed: value.Value, log: Log) std.mem.Allocator.Error!FileHashCache {
     var cache: FileHashCache = .empty;
 
     const object = switch (parsed) {
         .object => |object| object,
-        else => return cache,
+        else => {
+            if (an) annotate(log, "cacheFromValue-not-an-object", "", .{});
+            return cache;
+        },
     };
 
     var walker = object.iterator();
     while (walker.next()) |entry| {
+        if (an) annotate(log, "cacheFromValue-entries-iteration", "", .{});
         const record = entry.value_ptr.*;
-        if (record != .object) continue;
+        if (record != .object) {
+            if (an) annotate(log, "cacheFromValue-record-is-not-an-object", "", .{});
+            continue;
+        }
 
-        const mtime_ms = switch (value.get(record, "mtimeMs") orelse continue) {
+        const mtime_ms = switch (value.get(record, "mtimeMs") orelse {
+            if (an) annotate(log, "cacheFromValue-no-mtime", "", .{});
+            continue;
+        }) {
             .float => |number| number,
             .integer => |whole| @as(f64, @floatFromInt(whole)),
-            else => continue,
+            else => {
+                if (an) annotate(log, "cacheFromValue-mtime-is-not-a-number", "", .{});
+                continue;
+            },
         };
-        const size = switch (value.get(record, "size") orelse continue) {
+        const size = switch (value.get(record, "size") orelse {
+            if (an) annotate(log, "cacheFromValue-no-size", "", .{});
+            continue;
+        }) {
             .integer => |whole| if (whole < 0) continue else @as(u64, @intCast(whole)),
             .float => |number| if (number < 0) continue else @as(u64, @intFromFloat(number)),
-            else => continue,
+            else => {
+                if (an) annotate(log, "cacheFromValue-size-is-not-a-number", "", .{});
+                continue;
+            },
         };
-        const hash = switch (value.get(record, "hash") orelse continue) {
+        const hash = switch (value.get(record, "hash") orelse {
+            if (an) annotate(log, "cacheFromValue-no-hash", "", .{});
+            continue;
+        }) {
             .string => |text| text,
-            else => continue,
+            else => {
+                if (an) annotate(log, "cacheFromValue-hash-is-not-a-string", "", .{});
+                continue;
+            },
         };
 
         try cache.put(allocator, entry.key_ptr.*, .{ .mtime_ms = mtime_ms, .size = size, .hash = hash });

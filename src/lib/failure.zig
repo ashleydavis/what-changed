@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 
 //
 // How the message that goes with a failure is carried.
@@ -36,10 +45,17 @@ pub const Failure = struct {
     message: ?[]const u8 = null,
 
     //
+    // Where this Failure's own branch markers go. Carried here rather than passed to each method,
+    // because a Failure is already handed to every fallible function in the project, so nothing
+    // that has one has to be given a second thing beside it.
+    //
+    log: Log = .{},
+
+    //
     // Makes a Failure that allocates its messages from the given allocator.
     //
-    pub fn init(allocator: std.mem.Allocator) Failure {
-        return .{ .allocator = allocator };
+    pub fn init(allocator: std.mem.Allocator, log: Log) Failure {
+        return .{ .allocator = allocator, .log = log };
     }
 
     //
@@ -51,7 +67,11 @@ pub const Failure = struct {
     //
     pub fn set(self: *Failure, comptime fmt: []const u8, args: anytype) Error {
         if (self.message == null) {
-            self.message = std.fmt.allocPrint(self.allocator, fmt, args) catch return error.OutOfMemory;
+            if (an) annotate(self.log, "set-first-message", "", .{});
+            self.message = std.fmt.allocPrint(self.allocator, fmt, args) catch {
+                if (an) annotate(self.log, "set-no-room", "", .{});
+                return error.OutOfMemory;
+            };
         }
         return error.Failed;
     }

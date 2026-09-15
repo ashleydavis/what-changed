@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const files = @import("files.zig");
 const value = @import("value.zig");
 const failure = @import("failure.zig");
@@ -235,6 +244,7 @@ const HashedFileTree = struct {
 // wrong however the run that computed them ends.
 //
 fn hashFileTree(context: *const Context, options: ReportOptions) failure.Error!HashedFileTree {
+    const log = context.fail.log;
     const allocator = context.allocator;
 
     const config_path = try config_module.resolveConfigPath(context.io, allocator, options.config, context.cwd, context.fail);
@@ -242,14 +252,15 @@ fn hashFileTree(context: *const Context, options: ReportOptions) failure.Error!H
     const config = try config_module.loadConfig(context.io, allocator, config_path, context.fail);
 
     const cache_dir = try files.resolvePath(allocator, root_dir, config.cache_dir);
-    var cache = try cache_store.loadCache(context.io, allocator, cache_dir);
+    var cache = try cache_store.loadCache(context.io, allocator, cache_dir, log);
 
     const listed = try context.list_files(context.io, context.environ, allocator, root_dir, context.fail);
-    const file_paths = try list_files.filterIgnoredFiles(allocator, listed, config.ignore);
-    const hashed = try file_hash.hashFiles(context.io, allocator, root_dir, file_paths, &cache.file_hashes);
+    const file_paths = try list_files.filterIgnoredFiles(allocator, listed, config.ignore, log);
+    const hashed = try file_hash.hashFiles(context.io, allocator, root_dir, file_paths, &cache.file_hashes, log);
 
-    var pruned = try cache_store.pruneFileHashes(allocator, &cache.file_hashes, file_paths);
-    cache_store.saveFileHashes(context.io, allocator, cache_dir, &pruned) catch |err| {
+    var pruned = try cache_store.pruneFileHashes(allocator, &cache.file_hashes, file_paths, log);
+    cache_store.saveFileHashes(context.io, allocator, cache_dir, &pruned, log) catch |err| {
+        if (an) annotate(log, "hashFileTree-cache-will-not-write", "", .{});
         return context.fail.set("Failed to write the file hash cache in \"{s}\": {s}", .{ cache_dir, files.describeError(err) });
     };
 
@@ -273,6 +284,7 @@ fn hashFileTree(context: *const Context, options: ReportOptions) failure.Error!H
 // changed because there is only ever one comparison for them to disagree about.
 //
 pub fn compareFileTree(context: *const Context, request: ReportRequest) failure.Error!u8 {
+    const log = context.fail.log;
     const allocator = context.allocator;
 
     var tree = try hashFileTree(context, request.options);
@@ -282,8 +294,8 @@ pub fn compareFileTree(context: *const Context, request: ReportRequest) failure.
     // to ignore would report every already-recorded file of that type as deleted.
     //
     const baseline_path = try files.resolvePath(allocator, tree.root_dir, tree.config.baseline_path);
-    const loaded = (try baseline_store.loadBaseline(context.io, allocator, baseline_path)).baseline;
-    const baseline = try filterIgnoredBaseline(allocator, &loaded, tree.config.ignore);
+    const loaded = (try baseline_store.loadBaseline(context.io, allocator, baseline_path, log)).baseline;
+    const baseline = try filterIgnoredBaseline(allocator, &loaded, tree.config.ignore, log);
 
     const format = try output_module.parseOutputFormat(request.options.output, context.fail);
 
@@ -294,14 +306,20 @@ pub fn compareFileTree(context: *const Context, request: ReportRequest) failure.
     // affected while "changes" says there is nothing to report.
     //
     const has_baseline = baseline.targets.count() > 0;
-    const categorized = try categorize.categorizeChanges(allocator, &tree.config, &tree.file_hashes, tree.unreadable, &baseline, context.platform);
+    const categorized = try categorize.categorizeChanges(allocator, &tree.config, &tree.file_hashes, tree.unreadable, &baseline, context.platform, log);
 
     //
     // A target that cannot run on this platform never has changed files, so this cannot name one.
     //
+    // A config holds at least one target, because `parseConfig` refuses one that does not, and
+    // there is one of these per target.
+    std.debug.assert(categorized.targets.len > 0);
+
     var target_names: std.ArrayList([]const u8) = .empty;
     for (categorized.targets) |target| {
+        if (an) annotate(log, "compareFileTree-targets-iteration", "", .{});
         if (target.changed_files.len > 0) {
+            if (an) annotate(log, "compareFileTree-target-affected", "", .{});
             try target_names.append(allocator, target.name);
         }
     }
@@ -314,7 +332,7 @@ pub fn compareFileTree(context: *const Context, request: ReportRequest) failure.
         // goes on to name.
         //
         .file_count = tree.file_paths.len,
-        .changes = try allChangedFiles(allocator, categorized),
+        .changes = try allChangedFiles(allocator, categorized, log),
         .categorized = categorized,
         .target_names = try target_names.toOwnedSlice(allocator),
     }, request.mode, format);
@@ -330,27 +348,30 @@ pub fn compareFileTree(context: *const Context, request: ReportRequest) failure.
 // "changes" view shows, and building it from the same per-target results the summary uses is what
 // stops the two views disagreeing.
 //
-pub fn allChangedFiles(allocator: std.mem.Allocator, categorized: CategorizedChanges) std.mem.Allocator.Error![]ChangedFile {
+pub fn allChangedFiles(allocator: std.mem.Allocator, categorized: CategorizedChanges, log: Log) std.mem.Allocator.Error![]ChangedFile {
     var by_path: std.StringArrayHashMapUnmanaged(ChangedFile) = .empty;
 
     for (categorized.targets) |target| {
+        if (an) annotate(log, "allChangedFiles-targets-iteration", "", .{});
         for (target.changed_files) |change| {
+            if (an) annotate(log, "allChangedFiles-changes-iteration", "", .{});
             try by_path.put(allocator, change.path, change);
         }
     }
     for (categorized.unwatched_files) |change| {
+        if (an) annotate(log, "allChangedFiles-unwatched-iteration", "", .{});
         try by_path.put(allocator, change.path, change);
     }
 
     const changes = try allocator.dupe(ChangedFile, by_path.values());
-    std.mem.sort(ChangedFile, changes, {}, lessThanChangedFile);
+    std.mem.sort(ChangedFile, changes, changed_files.Ordering{ .log = log }, lessThanChangedFile);
     return changes;
 }
 
 //
 // Orders two changes by path, for sorting.
 //
-fn lessThanChangedFile(_: void, left: ChangedFile, right: ChangedFile) bool {
+fn lessThanChangedFile(_: changed_files.Ordering, left: ChangedFile, right: ChangedFile) bool {
     return std.mem.order(u8, left.path, right.path) == .lt;
 }
 
@@ -359,10 +380,12 @@ fn lessThanChangedFile(_: void, left: ChangedFile, right: ChangedFile) bool {
 //
 pub fn renderReport(allocator: std.mem.Allocator, out: *Output, result: ReportResult, mode: ReportMode, format: OutputFormat) std.mem.Allocator.Error!void {
     if (format != .text) {
-        return output_module.printStructured(allocator, out, try structuredReport(allocator, result, mode), format);
+        if (an) annotate(out.log, "renderReport-machine-readable", "", .{});
+        return output_module.printStructured(allocator, out, try structuredReport(allocator, result, mode, out.log), format);
     }
 
     if (mode == .targets) {
+        if (an) annotate(out.log, "renderReport-target-names-only", "", .{});
         return reportTargetNames(out, result.target_names);
     }
 
@@ -372,11 +395,13 @@ pub fn renderReport(allocator: std.mem.Allocator, out: *Output, result: ReportRe
     // why the list is the whole project.
     //
     if (!result.has_baseline) {
+        if (an) annotate(out.log, "renderReport-no-baseline", "", .{});
         out.line("No baseline recorded yet, so every file counts as new. {d} file(s) in the working tree.", .{result.file_count});
         out.blank();
     }
 
     if (mode == .files) {
+        if (an) annotate(out.log, "renderReport-a-flat-list", "", .{});
         return reportChangedFiles(allocator, out, result.changes, result.file_count);
     }
 
@@ -389,10 +414,12 @@ pub fn renderReport(allocator: std.mem.Allocator, out: *Output, result: ReportRe
 // Each view renders only what that view is about, so a caller asking for "targets" gets a list of
 // names rather than a whole report it then has to dig through.
 //
-pub fn structuredReport(allocator: std.mem.Allocator, result: ReportResult, mode: ReportMode) std.mem.Allocator.Error!Value {
+pub fn structuredReport(allocator: std.mem.Allocator, result: ReportResult, mode: ReportMode, log: Log) std.mem.Allocator.Error!Value {
     if (mode == .targets) {
+        if (an) annotate(log, "structuredReport-target-names-only", "", .{});
         var names = value.newArray(allocator);
         for (result.target_names) |name| {
+            if (an) annotate(log, "structuredReport-names-iteration", "", .{});
             try names.append(value.str(name));
         }
 
@@ -402,17 +429,20 @@ pub fn structuredReport(allocator: std.mem.Allocator, result: ReportResult, mode
     }
 
     if (mode == .files) {
+        if (an) annotate(log, "structuredReport-a-flat-list", "", .{});
         var object: value.Object = .empty;
         try object.put(allocator, "hasBaseline", value.boolean(result.has_baseline));
         try object.put(allocator, "fileCount", value.int(@intCast(result.file_count)));
-        try object.put(allocator, "changed", try changed_files.toValueArray(allocator, result.changes));
+        try object.put(allocator, "changed", try changed_files.toValueArray(allocator, result.changes, log));
         return .{ .object = object };
     }
 
     var targets = value.newArray(allocator);
     for (result.categorized.targets) |target| {
+        if (an) annotate(log, "structuredReport-targets-iteration", "", .{});
         var watched = value.newArray(allocator);
         for (target.watched_paths) |watched_path| {
+            if (an) annotate(log, "structuredReport-watched-iteration", "", .{});
             try watched.append(value.str(watched_path));
         }
 
@@ -420,7 +450,7 @@ pub fn structuredReport(allocator: std.mem.Allocator, result: ReportResult, mode
         try entry.put(allocator, "name", value.str(target.name));
         try entry.put(allocator, "watchedPaths", .{ .array = watched });
         try entry.put(allocator, "appliesHere", value.boolean(target.applies_here));
-        try entry.put(allocator, "changed", try changed_files.toValueArray(allocator, target.changed_files));
+        try entry.put(allocator, "changed", try changed_files.toValueArray(allocator, target.changed_files, log));
         try targets.append(.{ .object = entry });
     }
 
@@ -428,7 +458,7 @@ pub fn structuredReport(allocator: std.mem.Allocator, result: ReportResult, mode
     try object.put(allocator, "hasBaseline", value.boolean(result.has_baseline));
     try object.put(allocator, "fileCount", value.int(@intCast(result.file_count)));
     try object.put(allocator, "targets", .{ .array = targets });
-    try object.put(allocator, "unwatched", try changed_files.toValueArray(allocator, result.categorized.unwatched_files));
+    try object.put(allocator, "unwatched", try changed_files.toValueArray(allocator, result.categorized.unwatched_files, log));
     return .{ .object = object };
 }
 
@@ -440,22 +470,30 @@ pub fn structuredReport(allocator: std.mem.Allocator, result: ReportResult, mode
 // tree, so it needs neither a git repository nor a recorded baseline.
 //
 pub fn listTargets(context: *const Context, options: ReportOptions) failure.Error!u8 {
+    const log = context.fail.log;
     const allocator = context.allocator;
 
     const config_path = try config_module.resolveConfigPath(context.io, allocator, options.config, context.cwd, context.fail);
     const config = try config_module.loadConfig(context.io, allocator, config_path, context.fail);
     const format = try output_module.parseOutputFormat(options.output, context.fail);
 
+    // As above: a config that parsed holds at least one target.
+    std.debug.assert(config.targets.len > 0);
+
     var names: std.ArrayList([]const u8) = .empty;
     for (config.targets) |*target| {
-        if (categorize.targetAppliesToPlatform(target, context.platform)) {
+        if (an) annotate(log, "listTargets-targets-iteration", "", .{});
+        if (categorize.targetAppliesToPlatform(target, context.platform, log)) {
+            if (an) annotate(log, "listTargets-runs-here", "", .{});
             try names.append(allocator, target.name);
         }
     }
 
     if (format != .text) {
+        if (an) annotate(log, "listTargets-machine-readable", "", .{});
         var rendered = value.newArray(allocator);
         for (names.items) |name| {
+            if (an) annotate(log, "listTargets-names-iteration", "", .{});
             try rendered.append(value.str(name));
         }
 
@@ -473,6 +511,7 @@ pub fn listTargets(context: *const Context, options: ReportOptions) failure.Erro
 // Records the current tree as the baseline that later reports measure against.
 //
 pub fn runBaseline(context: *const Context, options: ReportOptions, target_names: []const []const u8) failure.Error!u8 {
+    const log = context.fail.log;
     const allocator = context.allocator;
 
     var tree = try hashFileTree(context, options);
@@ -482,14 +521,23 @@ pub fn runBaseline(context: *const Context, options: ReportOptions, target_names
     // report success while recording nothing, and the caller would believe a suite had been marked
     // as passed when it had not.
     //
+    // As above: a config that parsed holds at least one target.
+    std.debug.assert(tree.config.targets.len > 0);
+
     for (target_names) |requested| {
+        if (an) annotate(log, "runBaseline-requested-iteration", "", .{});
         var known = false;
         for (tree.config.targets) |target| {
-            if (std.mem.eql(u8, target.name, requested)) known = true;
+            if (an) annotate(log, "runBaseline-known-iteration", "", .{});
+            if (std.mem.eql(u8, target.name, requested)) {
+                if (an) annotate(log, "runBaseline-a-known-name", "", .{});
+                known = true;
+            }
         }
         if (!known) {
+            if (an) annotate(log, "runBaseline-an-unknown-name", "", .{});
             return context.fail.set("\"{s}\" is not a target in \"{s}\". Known targets: {s}", .{
-                requested, tree.config_path, try joinTargetNames(allocator, tree.config),
+                requested, tree.config_path, try joinTargetNames(allocator, tree.config, log),
             });
         }
     }
@@ -501,14 +549,21 @@ pub fn runBaseline(context: *const Context, options: ReportOptions, target_names
     //
     var to_capture: std.ArrayList(config_module.TargetConfig) = .empty;
     for (tree.config.targets) |target| {
-        if (target_names.len == 0 or containsName(target_names, target.name)) {
+        if (an) annotate(log, "runBaseline-config-targets-iteration", "", .{});
+        if (target_names.len == 0 or containsName(target_names, target.name, log)) {
+            if (an) annotate(log, "runBaseline-capturing-this-one", "", .{});
             try to_capture.append(allocator, target);
         }
     }
 
+    // With no names every target is captured, and with names every one of them has already been
+    // matched against a target above, so there is always at least one.
+    std.debug.assert(to_capture.items.len > 0);
+
     var captured: baseline_store.TargetBaselines = .empty;
     for (to_capture.items) |*target| {
-        try captured.put(allocator, target.name, try categorize.capturedFilesFor(allocator, &tree.config, target, &tree.file_hashes));
+        if (an) annotate(log, "runBaseline-capturing-iteration", "", .{});
+        try captured.put(allocator, target.name, try categorize.capturedFilesFor(allocator, &tree.config, target, &tree.file_hashes, log));
     }
 
     const baseline_path = try files.resolvePath(allocator, tree.root_dir, tree.config.baseline_path);
@@ -516,6 +571,7 @@ pub fn runBaseline(context: *const Context, options: ReportOptions, target_names
 
     var names: std.ArrayList([]const u8) = .empty;
     for (to_capture.items) |target| {
+        if (an) annotate(log, "runBaseline-naming-iteration", "", .{});
         try names.append(allocator, target.name);
     }
 
@@ -528,9 +584,13 @@ pub fn runBaseline(context: *const Context, options: ReportOptions, target_names
 //
 // True when a name is in the list.
 //
-fn containsName(names: []const []const u8, name: []const u8) bool {
+pub fn containsName(names: []const []const u8, name: []const u8, log: Log) bool {
     for (names) |candidate| {
-        if (std.mem.eql(u8, candidate, name)) return true;
+        if (an) annotate(log, "containsName-names-iteration", "", .{});
+        if (std.mem.eql(u8, candidate, name)) {
+            if (an) annotate(log, "containsName-found", "", .{});
+            return true;
+        }
     }
     return false;
 }
@@ -538,9 +598,10 @@ fn containsName(names: []const []const u8, name: []const u8) bool {
 //
 // Every target name in the config, comma separated, for the message that refuses an unknown one.
 //
-fn joinTargetNames(allocator: std.mem.Allocator, config: Config) std.mem.Allocator.Error![]const u8 {
+pub fn joinTargetNames(allocator: std.mem.Allocator, config: Config, log: Log) std.mem.Allocator.Error![]const u8 {
     var names: std.ArrayList([]const u8) = .empty;
     for (config.targets) |target| {
+        if (an) annotate(log, "joinTargetNames-targets-iteration", "", .{});
         try names.append(allocator, target.name);
     }
     return std.mem.join(allocator, ", ", names.items);
@@ -566,6 +627,7 @@ pub fn runCacheCapture(context: *const Context, options: ReportOptions) failure.
 //
 pub fn reportTargetNames(out: *Output, names: []const []const u8) void {
     for (names) |name| {
+        if (an) annotate(out.log, "reportTargetNames-names-iteration", "", .{});
         out.line("{s}", .{name});
     }
 }
@@ -574,32 +636,36 @@ pub fn reportTargetNames(out: *Output, names: []const []const u8) void {
 // Drops the ignored extensions from a recorded baseline, so a change to ignore does not read as a
 // pile of deletions on the next run.
 //
-pub fn filterIgnoredBaseline(allocator: std.mem.Allocator, baseline: *const Baseline, ignore: []const []const u8) std.mem.Allocator.Error!Baseline {
+pub fn filterIgnoredBaseline(allocator: std.mem.Allocator, baseline: *const Baseline, ignore: []const []const u8, log: Log) std.mem.Allocator.Error!Baseline {
     if (ignore.len == 0) {
+        if (an) annotate(log, "filterIgnoredBaseline-nothing-ignored", "", .{});
         return baseline.*;
     }
 
     var targets: baseline_store.TargetBaselines = .empty;
     var walker = baseline.targets.iterator();
     while (walker.next()) |entry| {
-        try targets.put(allocator, entry.key_ptr.*, try filterIgnoredFileHashes(allocator, entry.value_ptr, ignore));
+        if (an) annotate(log, "filterIgnoredBaseline-targets-iteration", "", .{});
+        try targets.put(allocator, entry.key_ptr.*, try filterIgnoredFileHashes(allocator, entry.value_ptr, ignore, log));
     }
 
     return .{
         .targets = targets,
-        .files = try filterIgnoredFileHashes(allocator, &baseline.files, ignore),
+        .files = try filterIgnoredFileHashes(allocator, &baseline.files, ignore, log),
     };
 }
 
 //
 // Drops the ignored extensions from one set of recorded file hashes.
 //
-pub fn filterIgnoredFileHashes(allocator: std.mem.Allocator, recorded: *const FileHashes, ignore: []const []const u8) std.mem.Allocator.Error!FileHashes {
+pub fn filterIgnoredFileHashes(allocator: std.mem.Allocator, recorded: *const FileHashes, ignore: []const []const u8, log: Log) std.mem.Allocator.Error!FileHashes {
     var filtered: FileHashes = .empty;
 
     var walker = recorded.iterator();
     while (walker.next()) |entry| {
-        if (!list_files.isIgnoredFile(entry.key_ptr.*, ignore)) {
+        if (an) annotate(log, "filterIgnoredFileHashes-recorded-iteration", "", .{});
+        if (!list_files.isIgnoredFile(entry.key_ptr.*, ignore, log)) {
+            if (an) annotate(log, "filterIgnoredFileHashes-kept", "", .{});
             try filtered.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
     }
@@ -613,12 +679,14 @@ pub fn filterIgnoredFileHashes(allocator: std.mem.Allocator, recorded: *const Fi
 //
 pub fn reportChangedFiles(allocator: std.mem.Allocator, out: *Output, changes: []const ChangedFile, file_count: usize) std.mem.Allocator.Error!void {
     if (changes.len == 0) {
+        if (an) annotate(out.log, "reportChangedFiles-nothing-changed", "", .{});
         out.line("No files have changed since the baseline. {d} file(s) checked.", .{file_count});
         return;
     }
 
     out.line("Changed since the baseline:", .{});
-    for (try changed_files.formatChangedFiles(allocator, changes)) |line| {
+    for (try changed_files.formatChangedFiles(allocator, changes, out.log)) |line| {
+        if (an) annotate(out.log, "reportChangedFiles-lines-iteration", "", .{});
         out.line("{s}", .{line});
     }
     out.blank();
@@ -631,6 +699,7 @@ pub fn reportChangedFiles(allocator: std.mem.Allocator, out: *Output, changes: [
 //
 pub fn reportCategorizedChanges(allocator: std.mem.Allocator, out: *Output, categorized: CategorizedChanges, changes: []const ChangedFile, file_count: usize) std.mem.Allocator.Error!void {
     if (changes.len == 0) {
+        if (an) annotate(out.log, "reportCategorizedChanges-nothing-changed", "", .{});
         out.line("No files have changed since the baseline. {d} file(s) checked.", .{file_count});
         return;
     }
@@ -639,29 +708,35 @@ pub fn reportCategorizedChanges(allocator: std.mem.Allocator, out: *Output, cate
     out.blank();
 
     for (categorized.targets) |target| {
+        if (an) annotate(out.log, "reportCategorizedChanges-targets-iteration", "", .{});
         //
         // Said rather than left out. "unchanged" would be a lie about a target that could not have
         // run whatever changed, and dropping the line entirely would leave someone wondering whether
         // they had misspelled the target's name.
         //
         if (!target.applies_here) {
+            if (an) annotate(out.log, "reportCategorizedChanges-wrong-platform", "", .{});
             out.line("  {s}: wrong-platform", .{target.name});
             continue;
         }
         if (target.changed_files.len == 0) {
+            if (an) annotate(out.log, "reportCategorizedChanges-target-unchanged", "", .{});
             out.line("  {s}: unchanged", .{target.name});
             continue;
         }
         out.line("  {s}: {d} changed", .{ target.name, target.changed_files.len });
-        for (try changed_files.formatChangedFiles(allocator, target.changed_files)) |line| {
+        for (try changed_files.formatChangedFiles(allocator, target.changed_files, out.log)) |line| {
+            if (an) annotate(out.log, "reportCategorizedChanges-target-lines-iteration", "", .{});
             out.line("  {s}", .{line});
         }
     }
 
     if (categorized.unwatched_files.len > 0) {
+        if (an) annotate(out.log, "reportCategorizedChanges-some-unwatched", "", .{});
         out.blank();
         out.line("  Watched by no target: {d} changed", .{categorized.unwatched_files.len});
-        for (try changed_files.formatChangedFiles(allocator, categorized.unwatched_files)) |line| {
+        for (try changed_files.formatChangedFiles(allocator, categorized.unwatched_files, out.log)) |line| {
+            if (an) annotate(out.log, "reportCategorizedChanges-unwatched-lines-iteration", "", .{});
             out.line("  {s}", .{line});
         }
     }

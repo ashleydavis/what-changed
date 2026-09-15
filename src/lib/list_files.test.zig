@@ -6,28 +6,28 @@ const Failure = failure.Failure;
 const testing = std.testing;
 
 test "isIgnoredFile matches on the extension" {
-    try testing.expect(list_files.isIgnoredFile("README.md", &.{".md"}));
-    try testing.expect(list_files.isIgnoredFile("docs/guide.txt", &.{ ".md", ".txt" }));
-    try testing.expect(!list_files.isIgnoredFile("src/a.ts", &.{ ".md", ".txt" }));
-    try testing.expect(!list_files.isIgnoredFile("src/a.ts", &.{}));
+    try testing.expect(list_files.isIgnoredFile("README.md", &.{".md"}, .{}));
+    try testing.expect(list_files.isIgnoredFile("docs/guide.txt", &.{ ".md", ".txt" }, .{}));
+    try testing.expect(!list_files.isIgnoredFile("src/a.ts", &.{ ".md", ".txt" }, .{}));
+    try testing.expect(!list_files.isIgnoredFile("src/a.ts", &.{}, .{}));
 }
 
 test "isIgnoredFile ignores case" {
-    try testing.expect(list_files.isIgnoredFile("README.MD", &.{".md"}));
-    try testing.expect(list_files.isIgnoredFile("readme.md", &.{".MD"}));
+    try testing.expect(list_files.isIgnoredFile("README.MD", &.{".md"}, .{}));
+    try testing.expect(list_files.isIgnoredFile("readme.md", &.{".MD"}, .{}));
 }
 
 test "isIgnoredFile matches any suffix, not only a file extension" {
     //
     // The rule is "ends with", not "matches the last dot", so a compound suffix works.
     //
-    try testing.expect(list_files.isIgnoredFile("src/a.test.ts", &.{".test.ts"}));
-    try testing.expect(!list_files.isIgnoredFile("src/a.ts", &.{".test.ts"}));
+    try testing.expect(list_files.isIgnoredFile("src/a.test.ts", &.{".test.ts"}, .{}));
+    try testing.expect(!list_files.isIgnoredFile("src/a.ts", &.{".test.ts"}, .{}));
 }
 
 test "isIgnoredFile does not match a suffix longer than the path" {
-    try testing.expect(!list_files.isIgnoredFile("a.ts", &.{".very.long.extension"}));
-    try testing.expect(!list_files.isIgnoredFile("", &.{".md"}));
+    try testing.expect(!list_files.isIgnoredFile("a.ts", &.{".very.long.extension"}, .{}));
+    try testing.expect(!list_files.isIgnoredFile("", &.{".md"}, .{}));
 }
 
 test "filterIgnoredFiles removes the ignored files and keeps the rest" {
@@ -35,7 +35,7 @@ test "filterIgnoredFiles removes the ignored files and keeps the rest" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const kept = try list_files.filterIgnoredFiles(allocator, &.{ "src/a.ts", "README.md", "docs/g.txt", "src/b.ts" }, &.{ ".md", ".txt" });
+    const kept = try list_files.filterIgnoredFiles(allocator, &.{ "src/a.ts", "README.md", "docs/g.txt", "src/b.ts" }, &.{ ".md", ".txt" }, .{});
     try testing.expectEqual(@as(usize, 2), kept.len);
     try testing.expectEqualStrings("src/a.ts", kept[0]);
     try testing.expectEqualStrings("src/b.ts", kept[1]);
@@ -46,7 +46,7 @@ test "filterIgnoredFiles with nothing to ignore keeps everything, in order" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const kept = try list_files.filterIgnoredFiles(allocator, &.{ "b.ts", "a.ts" }, &.{});
+    const kept = try list_files.filterIgnoredFiles(allocator, &.{ "b.ts", "a.ts" }, &.{}, .{});
     try testing.expectEqual(@as(usize, 2), kept.len);
     try testing.expectEqualStrings("b.ts", kept[0]);
     try testing.expectEqualStrings("a.ts", kept[1]);
@@ -57,7 +57,7 @@ test "filterIgnoredFiles can remove everything" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try testing.expectEqual(@as(usize, 0), (try list_files.filterIgnoredFiles(allocator, &.{ "a.md", "b.md" }, &.{".md"})).len);
+    try testing.expectEqual(@as(usize, 0), (try list_files.filterIgnoredFiles(allocator, &.{ "a.md", "b.md" }, &.{".md"}, .{})).len);
 }
 
 test "parseGitFileList splits on NUL and sorts" {
@@ -65,7 +65,7 @@ test "parseGitFileList splits on NUL and sorts" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const paths = try list_files.parseGitFileList(allocator, "src/z.ts\x00package.json\x00src/a.ts\x00");
+    const paths = try list_files.parseGitFileList(allocator, "src/z.ts\x00package.json\x00src/a.ts\x00", .{});
     try testing.expectEqual(@as(usize, 3), paths.len);
     try testing.expectEqualStrings("package.json", paths[0]);
     try testing.expectEqualStrings("src/a.ts", paths[1]);
@@ -81,7 +81,7 @@ test "parseGitFileList drops duplicates" {
     // git lists a path twice when it is both tracked and reported by another of the flags asked for.
     // The tool must hash it once, not twice.
     //
-    const paths = try list_files.parseGitFileList(allocator, "a.ts\x00a.ts\x00b.ts\x00");
+    const paths = try list_files.parseGitFileList(allocator, "a.ts\x00a.ts\x00b.ts\x00", .{});
     try testing.expectEqual(@as(usize, 2), paths.len);
 }
 
@@ -90,9 +90,9 @@ test "parseGitFileList ignores empty entries and a missing final separator" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try testing.expectEqual(@as(usize, 0), (try list_files.parseGitFileList(allocator, "")).len);
-    try testing.expectEqual(@as(usize, 0), (try list_files.parseGitFileList(allocator, "\x00\x00")).len);
-    try testing.expectEqual(@as(usize, 1), (try list_files.parseGitFileList(allocator, "only.ts")).len);
+    try testing.expectEqual(@as(usize, 0), (try list_files.parseGitFileList(allocator, "", .{})).len);
+    try testing.expectEqual(@as(usize, 0), (try list_files.parseGitFileList(allocator, "\x00\x00", .{})).len);
+    try testing.expectEqual(@as(usize, 1), (try list_files.parseGitFileList(allocator, "only.ts", .{})).len);
 }
 
 test "parseGitFileList keeps a path holding a space or a newline whole" {
@@ -104,14 +104,14 @@ test "parseGitFileList keeps a path holding a space or a newline whole" {
     // The reason the tool asks git for NUL-separated output at all. A newline in a filename is legal
     // on every filesystem this runs on, and line-separated output would split such a path in two.
     //
-    const paths = try list_files.parseGitFileList(allocator, "a file.ts\x00odd\nname.ts\x00");
+    const paths = try list_files.parseGitFileList(allocator, "a file.ts\x00odd\nname.ts\x00", .{});
     try testing.expectEqual(@as(usize, 2), paths.len);
     try testing.expectEqualStrings("a file.ts", paths[0]);
     try testing.expectEqualStrings("odd\nname.ts", paths[1]);
 }
 
 test "runGitLsFiles fails and names git when the directory is not a repository" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -119,20 +119,20 @@ test "runGitLsFiles fails and names git when the directory is not a repository" 
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     var environment = std.process.Environ.Map.init(allocator);
     defer environment.deinit();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     try testing.expectError(error.Failed, list_files.runGitLsFiles(io, &environment, allocator, temporary.path, &fail));
     try testing.expect(std.mem.startsWith(u8, fail.text(), "git ls-files failed in \""));
     try testing.expect(std.mem.indexOf(u8, fail.text(), temporary.path) != null);
 }
 
 test "listRepoFiles lists what git reports in a real repository" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -140,7 +140,7 @@ test "listRepoFiles lists what git reports in a real repository" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     //
@@ -173,7 +173,7 @@ test "listRepoFiles lists what git reports in a real repository" {
     try temporary.write(".gitignore", "ignored/\n");
     try temporary.write("ignored/hidden.ts", "x");
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     const listed = list_files.listRepoFiles(io, &environment, allocator, temporary.path, &fail) catch |err| {
         std.debug.print("listRepoFiles failed: {s}\n", .{fail.text()});
         return err;

@@ -3,14 +3,14 @@ const wc = @import("what-changed");
 const version = @import("version.zig");
 const commander = wc.commander;
 const testing = std.testing;
-const harness = @import("harness.zig");
+const harness = @import("test/harness.zig");
 
 test "versionCommand names the tool and its version" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
-    try testing.expectEqual(@as(u8, 0), try version.versionCommand(&context, null));
+    try testing.expectEqual(@as(u8, 0), try version.versionCommand(&context, null, wc.version.build_metadata));
 
     //
     // Which version, not what it is: the release workflow rewrites the value, so asserting it would
@@ -21,11 +21,11 @@ test "versionCommand names the tool and its version" {
 }
 
 test "versionCommand says a working copy is not a release" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
-    _ = try version.versionCommand(&context, null);
+    _ = try version.versionCommand(&context, null, wc.version.build_metadata);
 
     //
     // True of a build from source, which is what this test runs as. A release build says which
@@ -39,11 +39,11 @@ test "versionCommand says a working copy is not a release" {
 }
 
 test "versionCommand renders every field as json" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
-    _ = try version.versionCommand(&context, "json");
+    _ = try version.versionCommand(&context, "json", wc.version.build_metadata);
 
     try testing.expect(std.mem.indexOf(u8, scenario.printed(), "\"version\"") != null);
     try testing.expect(std.mem.indexOf(u8, scenario.printed(), "\"commitHash\"") != null);
@@ -52,11 +52,11 @@ test "versionCommand renders every field as json" {
 }
 
 test "versionCommand renders yaml too" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
-    _ = try version.versionCommand(&context, "yaml");
+    _ = try version.versionCommand(&context, "yaml", wc.version.build_metadata);
     try testing.expect(std.mem.indexOf(u8, scenario.printed(), "version:") != null);
 
     //
@@ -67,16 +67,16 @@ test "versionCommand renders yaml too" {
 }
 
 test "versionCommand refuses an unknown format" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
-    try testing.expectError(error.Failed, version.versionCommand(&context, "xml"));
+    try testing.expectError(error.Failed, version.versionCommand(&context, "xml", wc.version.build_metadata));
     try testing.expect(std.mem.indexOf(u8, scenario.fail.text(), "Unknown --output format") != null);
 }
 
 test "buildVersionCommand declares only --output" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
@@ -88,7 +88,7 @@ test "buildVersionCommand declares only --output" {
 }
 
 test "the version command runs through the parser" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();

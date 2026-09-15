@@ -3,3 +3,5 @@ zig-out/
 bin/
 .what-changed/
 .claude/worktrees/
+# Where Zig 0.16 unpacks fetched dependencies.
+zig-pkg/

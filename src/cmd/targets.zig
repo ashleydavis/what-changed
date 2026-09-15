@@ -4,6 +4,15 @@
 //
 
 const wc = @import("what-changed");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 
 const commander = wc.commander;
 
@@ -34,7 +43,7 @@ pub fn targetsListCommand(context: *const Context, options: ReportOptions) wc.fa
 // Builds the `targets` command and its `list` subcommand.
 //
 pub fn buildTargetsCommand(context: *const Context) *Command {
-    const cmd = Command.init(context.allocator, "targets")
+    const cmd = Command.init(context.allocator, "targets", context.fail.log)
         .description("Print the names of the targets affected by the current changes, one per line. Targets that cannot run on this platform are never named.")
         .option("--config <path>", "The config file to read. Defaults to what-changed.yaml, .yml or .json in the working directory.", null)
         .option("--output <format>", "How to render the result: text, json or yaml.", "text")

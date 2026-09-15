@@ -1,4 +1,12 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// This file drives the commands rather than being driven, so it sits in a directory a fault run is
+// told to leave out and carries no branch markers of its own. It still takes a `Log`, because what
+// it drives is marked and a scenario's log has to reach it.
+//
+const Log = annotate_mod.Log;
 const wc = @import("what-changed");
 
 const Context = wc.run.Context;
@@ -32,6 +40,9 @@ pub fn listFromScenario(io: std.Io, environ: *const std.process.Environ.Map, all
     _ = io;
     _ = environ;
     _ = root_dir;
+    // Named because this stands in for `wc.list_files.listRepoFiles`, whose signature it has to
+    // match to be assigned to the same function pointer. Nothing here can fail, so nothing records
+    // a reason.
     _ = fail;
     return allocator.dupe([]const u8, file_list);
 }
@@ -41,7 +52,11 @@ pub fn listFromScenario(io: std.Io, environ: *const std.process.Environ.Map, all
 //
 pub const Scenario = struct {
     arena: std.heap.ArenaAllocator,
-    test_io: wc.files.TestIo,
+
+    // Null when the scenario was handed an `Io` to use. A unit test makes its own, which reaches the
+    // real disk; a simulation passes the one the run gave it, whose filesystem is held in memory.
+    test_io: ?wc.files.TestIo,
+    given: ?std.Io,
     temporary: wc.files.TemporaryDir,
     captured: std.Io.Writer.Allocating,
     out: Output,
@@ -54,24 +69,53 @@ pub const Scenario = struct {
     environ: std.process.Environ.Map,
 
     //
+    // Where this scenario's own branch markers go.
+    //
+    log: Log = .{},
+
+    //
+    // Where the scenario itself is allocated from, which is not the arena inside it: the arena is
+    // freed as one piece and this is what frees the piece holding it. A parameter rather than the
+    // testing allocator, because a fault run is not a test build and reaching for that one there
+    // stops the compile.
+    //
+    parent: std.mem.Allocator,
+
+    //
     // Makes an empty project in a throwaway directory.
     //
-    pub fn create() !*Scenario {
-        const scenario = try std.testing.allocator.create(Scenario);
+    pub fn create(parent: std.mem.Allocator, log: Log) !*Scenario {
+        return build(parent, log, null);
+    }
+
+    //
+    // The same, driven through an `Io` the caller already has. A simulation passes the run's own,
+    // whose filesystem is in memory, so the project this makes costs no syscall and leaves nothing
+    // on disk when the scenario ends.
+    //
+    pub fn createOn(parent: std.mem.Allocator, log: Log, io_given: std.Io) !*Scenario {
+        return build(parent, log, io_given);
+    }
+
+    fn build(parent: std.mem.Allocator, log: Log, io_given: ?std.Io) !*Scenario {
+        const scenario = try parent.create(Scenario);
         scenario.* = .{
-            .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
-            .test_io = .init(),
+            .arena = std.heap.ArenaAllocator.init(parent),
+            .test_io = if (io_given == null) .init(log) else null,
+            .given = io_given,
             .temporary = undefined,
             .captured = undefined,
             .out = undefined,
             .fail = undefined,
             .environ = undefined,
+            .log = log,
+            .parent = parent,
         };
-        scenario.temporary = try wc.files.TemporaryDir.create(scenario.test_io.io());
+        scenario.temporary = try wc.files.TemporaryDir.create(scenario.io(), log);
         scenario.environ = std.process.Environ.Map.init(scenario.arena.allocator());
         scenario.captured = std.Io.Writer.Allocating.init(scenario.arena.allocator());
-        scenario.out = .{ .writer = &scenario.captured.writer };
-        scenario.fail = Failure.init(scenario.arena.allocator());
+        scenario.out = .{ .writer = &scenario.captured.writer, .log = log };
+        scenario.fail = Failure.init(scenario.arena.allocator(), log);
         file_list = &.{};
         return scenario;
     }
@@ -81,9 +125,12 @@ pub const Scenario = struct {
     //
     pub fn destroy(self: *Scenario) void {
         self.temporary.destroy();
-        self.test_io.deinit();
+        if (self.test_io) |*own| {
+            own.deinit();
+        }
+        const parent = self.parent;
         self.arena.deinit();
-        std.testing.allocator.destroy(self);
+        parent.destroy(self);
     }
 
     //
@@ -97,7 +144,10 @@ pub const Scenario = struct {
     // The `Io` everything this scenario does goes through, which is its own and no other test's.
     //
     pub fn io(self: *Scenario) std.Io {
-        return self.test_io.io();
+        if (self.given) |io_given| {
+            return io_given;
+        }
+        return self.test_io.?.io();
     }
 
     //

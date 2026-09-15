@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const value = @import("value.zig");
 const files = @import("files.zig");
 const failure = @import("failure.zig");
@@ -78,31 +87,31 @@ pub const LoadedBaseline = struct {
 // also reads as no baseline. Everything then counts as changed, which is the safe direction: the
 // first run after an upgrade does the work rather than skipping it.
 //
-pub fn loadBaseline(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8) std.mem.Allocator.Error!LoadedBaseline {
-    const source = try cache_store.readJsonObject(io, allocator, baseline_path);
-    return .{ .baseline = try toBaseline(allocator, source.contentOrNull()), .source = source };
+pub fn loadBaseline(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8, log: Log) std.mem.Allocator.Error!LoadedBaseline {
+    const source = try cache_store.readJsonObject(io, allocator, baseline_path, log);
+    return .{ .baseline = try toBaseline(allocator, source.contentOrNull(), log), .source = source };
 }
 
 //
 // Reads a parsed JSON object as a baseline, treating either half that is not a plain object as
 // absent.
 //
-pub fn toBaseline(allocator: std.mem.Allocator, parsed: Value) std.mem.Allocator.Error!Baseline {
+pub fn toBaseline(allocator: std.mem.Allocator, parsed: Value, log: Log) std.mem.Allocator.Error!Baseline {
     var targets: TargetBaselines = .empty;
 
     if (value.get(parsed, "targets")) |raw_targets| {
+        if (an) annotate(log, "toBaseline-has-targets", "", .{});
         if (value.isPlainObject(raw_targets)) {
+            if (an) annotate(log, "toBaseline-targets-is-an-object", "", .{});
             var walker = raw_targets.object.iterator();
             while (walker.next()) |entry| {
-                try targets.put(allocator, entry.key_ptr.*, try file_hashes_module.fromValue(allocator, entry.value_ptr.*));
+                if (an) annotate(log, "toBaseline-targets-iteration", "", .{});
+                try targets.put(allocator, entry.key_ptr.*, try file_hashes_module.fromValue(allocator, entry.value_ptr.*, log));
             }
         }
     }
 
-    const recorded_files = if (value.get(parsed, "files")) |raw_files|
-        try file_hashes_module.fromValue(allocator, raw_files)
-    else
-        FileHashes.empty;
+    const recorded_files = if (value.get(parsed, "files")) |raw_files| try file_hashes_module.fromValue(allocator, raw_files, log) else FileHashes.empty;
 
     return .{ .targets = targets, .files = recorded_files };
 }
@@ -110,23 +119,24 @@ pub fn toBaseline(allocator: std.mem.Allocator, parsed: Value) std.mem.Allocator
 //
 // Renders a baseline as the JSON object it is stored as.
 //
-pub fn baselineToValue(allocator: std.mem.Allocator, baseline: *const Baseline) std.mem.Allocator.Error!Value {
+pub fn baselineToValue(allocator: std.mem.Allocator, baseline: *const Baseline, log: Log) std.mem.Allocator.Error!Value {
     //
     // Target names are sorted so that two runs recording the same thing write byte-identical files,
     // whatever order the config happened to list the targets in.
     //
     const names = try allocator.dupe([]const u8, baseline.targets.keys());
-    std.mem.sort([]const u8, names, {}, file_hashes_module.lessThanPath);
+    std.mem.sort([]const u8, names, file_hashes_module.Ordering{ .log = log }, file_hashes_module.lessThanPath);
 
     var targets: value.Object = .empty;
     for (names) |name| {
+        if (an) annotate(log, "baselineToValue-targets-iteration", "", .{});
         const recorded = baseline.targets.get(name).?;
-        try targets.put(allocator, name, try file_hashes_module.toValue(allocator, &recorded));
+        try targets.put(allocator, name, try file_hashes_module.toValue(allocator, &recorded, log));
     }
 
     var object: value.Object = .empty;
     try object.put(allocator, "targets", .{ .object = targets });
-    try object.put(allocator, "files", try file_hashes_module.toValue(allocator, &baseline.files));
+    try object.put(allocator, "files", try file_hashes_module.toValue(allocator, &baseline.files, log));
     return .{ .object = object };
 }
 
@@ -137,16 +147,18 @@ pub fn baselineToValue(allocator: std.mem.Allocator, baseline: *const Baseline) 
 // This is what makes a per-target capture safe. Capturing one target must not touch another's
 // record, because the other has not been re-run and nothing new is known about it.
 //
-pub fn withCapturedTargets(allocator: std.mem.Allocator, baseline: *const Baseline, captured: *const TargetBaselines, recorded_files: FileHashes) std.mem.Allocator.Error!Baseline {
+pub fn withCapturedTargets(allocator: std.mem.Allocator, baseline: *const Baseline, captured: *const TargetBaselines, recorded_files: FileHashes, log: Log) std.mem.Allocator.Error!Baseline {
     var targets: TargetBaselines = .empty;
 
     var existing = baseline.targets.iterator();
     while (existing.next()) |entry| {
+        if (an) annotate(log, "withCapturedTargets-existing-iteration", "", .{});
         try targets.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
     }
 
     var replacing = captured.iterator();
     while (replacing.next()) |entry| {
+        if (an) annotate(log, "withCapturedTargets-replacing-iteration", "", .{});
         try targets.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
     }
 
@@ -159,6 +171,12 @@ pub fn withCapturedTargets(allocator: std.mem.Allocator, baseline: *const Baseli
 const Capture = struct {
     captured: *const TargetBaselines,
     files: FileHashes,
+
+    //
+    // Where this capture's own branch markers go. The change below runs under the lock, reached
+    // through a function pointer whose signature is fixed, so the log travels with the capture.
+    //
+    log: Log = .{},
 };
 
 //
@@ -169,9 +187,9 @@ const Capture = struct {
 // before waiting.
 //
 fn applyCapture(capture: Capture, allocator: std.mem.Allocator, current: Value) std.mem.Allocator.Error!Value {
-    const existing = try toBaseline(allocator, current);
-    const merged = try withCapturedTargets(allocator, &existing, capture.captured, capture.files);
-    return baselineToValue(allocator, &merged);
+    const existing = try toBaseline(allocator, current, capture.log);
+    const merged = try withCapturedTargets(allocator, &existing, capture.captured, capture.files, capture.log);
+    return baselineToValue(allocator, &merged, capture.log);
 }
 
 //
@@ -183,14 +201,14 @@ fn applyCapture(capture: Capture, allocator: std.mem.Allocator, current: Value) 
 // would each keep only their own target, and whichever wrote second would discard the other's.
 //
 pub fn captureTargets(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8, captured: *const TargetBaselines, recorded_files: FileHashes, fail: *Failure) failure.Error!void {
-    try cache_store.updateJsonFile(io, allocator, baseline_path, Capture{ .captured = captured, .files = recorded_files }, applyCapture, fail);
+    try cache_store.updateJsonFile(io, allocator, baseline_path, Capture{ .captured = captured, .files = recorded_files, .log = fail.log }, applyCapture, fail);
 }
 
 //
 // Records a baseline, creating the directory above it if it is not there yet.
 //
-pub fn saveBaseline(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8, baseline: *const Baseline) !void {
-    try cache_store.writeJsonFile(io, allocator, baseline_path, try baselineToValue(allocator, baseline));
+pub fn saveBaseline(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8, baseline: *const Baseline, log: Log) !void {
+    try cache_store.writeJsonFile(io, allocator, baseline_path, try baselineToValue(allocator, baseline, log), log);
 }
 
 //
@@ -200,9 +218,9 @@ pub fn saveBaseline(io: std.Io, allocator: std.mem.Allocator, baseline_path: []c
 // reset writes rather than deletes: everything that reads it treats empty and absent alike, and a
 // write cannot go wrong the way a delete of a computed path can.
 //
-pub fn baselineReset(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8) !void {
+pub fn baselineReset(io: std.Io, allocator: std.mem.Allocator, baseline_path: []const u8, log: Log) !void {
     const empty = Baseline{ .targets = .empty, .files = .empty };
-    try saveBaseline(io, allocator, baseline_path, &empty);
+    try saveBaseline(io, allocator, baseline_path, &empty, log);
 }
 
 test {

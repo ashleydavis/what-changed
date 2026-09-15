@@ -4,7 +4,7 @@ const main = @import("main.zig");
 const commander = wc.commander;
 const Failure = wc.failure.Failure;
 const testing = std.testing;
-const harness = @import("cmd/harness.zig");
+const harness = @import("cmd/test/harness.zig");
 const wc = @import("what-changed");
 
 test "platformName uses the names a config is written against" {
@@ -12,7 +12,7 @@ test "platformName uses the names a config is written against" {
     // Node's names, not Zig's: "darwin" rather than "macos", "win32" rather than "windows". A config
     // saying `platforms: [darwin]` has to keep meaning macOS.
     //
-    const name = main.platformName();
+    const name = main.platformName(builtin.os.tag);
     try testing.expect(name.len > 0);
     try testing.expect(std.mem.indexOfScalar(u8, name, ' ') == null);
 
@@ -28,7 +28,7 @@ test "reportFailure prints the message and exits non-zero" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    var fail = Failure.init(arena.allocator());
+    var fail = Failure.init(arena.allocator(), .{});
     _ = fail.set("what-changed config field \"targets\" must be a non-empty array, got []", .{}) catch {};
 
     var captured = std.Io.Writer.Allocating.init(arena.allocator());
@@ -40,7 +40,7 @@ test "reportFailure says something even when nothing was recorded" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    var fail = Failure.init(arena.allocator());
+    var fail = Failure.init(arena.allocator(), .{});
     var captured = std.Io.Writer.Allocating.init(arena.allocator());
 
     try testing.expectEqual(@as(u8, 1), main.reportFailure(&fail, &captured.writer));
@@ -48,7 +48,7 @@ test "reportFailure says something even when nothing was recorded" {
 }
 
 test "buildProgram declares every command the tool has" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
@@ -67,7 +67,7 @@ test "buildProgram declares every command the tool has" {
 }
 
 test "the program help names every command and the usage line a script looks for" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
@@ -87,7 +87,7 @@ test "the program help names every command and the usage line a script looks for
 }
 
 test "the program's help option is --help, and -h is not one of its spellings" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
@@ -100,7 +100,7 @@ test "the program's help option is --help, and -h is not one of its spellings" {
 }
 
 test "an unknown option is refused through the whole program" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
@@ -112,7 +112,7 @@ test "an unknown option is refused through the whole program" {
 }
 
 test "--config reaches the subcommand it follows" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project("targets:\n  - name: unit\n    paths:\n      - src\n", &.{.{ "src/a.ts", "one" }});
@@ -127,7 +127,7 @@ test "--config reaches the subcommand it follows" {
 }
 
 test "an action's failure comes back as a refusal with its own message" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project("targets:\n  - name: unit\n    paths:\n      - src\n", &.{.{ "src/a.ts", "one" }});

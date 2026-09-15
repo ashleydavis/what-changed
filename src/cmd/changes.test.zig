@@ -2,12 +2,12 @@ const std = @import("std");
 const wc = @import("what-changed");
 const changes = @import("changes.zig");
 const testing = std.testing;
-const harness = @import("harness.zig");
+const harness = @import("test/harness.zig");
 
 const ONE_TARGET_CONFIG = "targets:\n  - name: unit\n    paths:\n      - src\n";
 
 test "changesCommand lists the changes without grouping them" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(ONE_TARGET_CONFIG, &.{.{ "src/a.ts", "one" }});
@@ -24,7 +24,7 @@ test "changesCommand lists the changes without grouping them" {
 }
 
 test "changesCommand honours --output" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(ONE_TARGET_CONFIG, &.{.{ "src/a.ts", "one" }});
@@ -35,7 +35,7 @@ test "changesCommand honours --output" {
 }
 
 test "buildChangesCommand declares the options and help the command line promises" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();

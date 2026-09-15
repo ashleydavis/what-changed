@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const value = @import("value.zig");
 const json = @import("json.zig");
 const yaml = @import("yaml.zig");
@@ -42,10 +51,15 @@ pub const OUTPUT_FORMAT_NAMES = "text, json, yaml";
 // would be found only by whatever downstream parser then choked on it.
 //
 pub fn parseOutputFormat(given: ?[]const u8, fail: *Failure) failure.Error!OutputFormat {
-    const text = given orelse return DEFAULT_OUTPUT_FORMAT;
+    const text = given orelse {
+        if (an) annotate(fail.log, "parseOutputFormat-none-given", "", .{});
+        return DEFAULT_OUTPUT_FORMAT;
+    };
 
     for (OUTPUT_FORMATS) |format| {
+        if (an) annotate(fail.log, "parseOutputFormat-formats-iteration", "", .{});
         if (std.ascii.eqlIgnoreCase(@tagName(format), text)) {
+            if (an) annotate(fail.log, "parseOutputFormat-known", "", .{});
             return format;
         }
     }
@@ -76,10 +90,17 @@ pub const Output = struct {
     failed: bool = false,
 
     //
+    // Where this Output's own branch markers go. Carried here rather than passed to each method,
+    // because everything that prints already has the Output and nothing else beside it.
+    //
+    log: Log = .{},
+
+    //
     // Prints one line, adding the newline.
     //
     pub fn line(self: *Output, comptime fmt: []const u8, args: anytype) void {
         self.writer.print(fmt ++ "\n", args) catch {
+            if (an) annotate(self.log, "line-nowhere-to-write", "", .{});
             self.failed = true;
         };
     }
@@ -99,15 +120,15 @@ pub const Output = struct {
 // Returning the text rather than printing it is what lets a test assert on the whole rendering
 // instead of having to capture the process's output.
 //
-pub fn renderStructured(allocator: std.mem.Allocator, root: Value, format: OutputFormat) std.mem.Allocator.Error![]const u8 {
+pub fn renderStructured(allocator: std.mem.Allocator, root: Value, format: OutputFormat, log: Log) std.mem.Allocator.Error![]const u8 {
     return switch (format) {
-        .yaml => yaml.stringify(allocator, root),
+        .yaml => yaml.stringify(allocator, root, log),
         //
         // Text is not a machine-readable format and never reaches here through the CLI, but
         // rendering it as JSON rather than crashing keeps this total: a caller that gets the format
         // wrong sees data, not a panic.
         //
-        .json, .text => json.stringify(allocator, root),
+        .json, .text => json.stringify(allocator, root, log),
     };
 }
 
@@ -115,7 +136,7 @@ pub fn renderStructured(allocator: std.mem.Allocator, root: Value, format: Outpu
 // Prints a value in whichever machine-readable format was asked for.
 //
 pub fn printStructured(allocator: std.mem.Allocator, out: *Output, root: Value, format: OutputFormat) std.mem.Allocator.Error!void {
-    out.line("{s}", .{try renderStructured(allocator, root, format)});
+    out.line("{s}", .{try renderStructured(allocator, root, format, out.log)});
 }
 
 test {

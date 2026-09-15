@@ -14,8 +14,29 @@ const std = @import("std");
 // module is the only way the benchmarks can reach code that lives outside their own directory.
 //
 pub fn build(b: *std.Build) void {
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const faultline = b.dependency("faultline", .{});
+
+    //
+    // The annotation channel every function marks its branches with, built here with the trace
+    // points turned off: this is the build that produces the binary people run, and a branch marker
+    // in it would cost a call and a format on every branch to record something nothing is reading.
+    //
+    // Built rather than taken ready-made, because the flag is compiled into the module and the one
+    // Faultline hands out has it on. The fault run below uses that one, so the markers stay in the
+    // source and cost nothing here.
+    //
+    const quiet_markers = b.addOptions();
+    quiet_markers.addOption(bool, "annotations_enabled", false);
+    const log_mod = b.createModule(.{
+        .root_source_file = faultline.path("src/log/log.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "flt_options", .module = quiet_markers.createModule() }},
+    });
 
     //
     // Every piece of logic lives here, behind src/lib/lib.zig, which re-exports the modules by
@@ -26,17 +47,39 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/lib/lib.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "log", .module = log_mod }},
     });
 
     //
     // The CLI itself: argument parsing and the wiring from the real process into the library.
     //
+    // Fault testing. One line: it walks this project, drives every function down every code path,
+    // and adds the `flt` step that runs it.
+    //
+    // The library goes over as a module of its own rather than as `lib_mod`, built against the
+    // channel the run itself compiles against. src/cmd and src/main reach the library by name, so
+    // the run has to be given one; handing it `lib_mod` put two copies of `annotate.zig` in the
+    // one binary, which Zig refuses.
+    const lib_under_test = b.createModule(.{
+        .root_source_file = b.path("src/lib/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "log", .module = faultline.module("log") }},
+    });
+    @import("faultline").addFaultTest(b, .{
+        .imports = &.{.{ .name = "what-changed", .module = lib_under_test }},
+        // The benchmarks drive this tool rather than being part of it, so they are not code to
+        // fault test. Without this the walk takes them for source and asks for their paths too.
+        .exclude = &.{ "perf-tests", "test" },
+    });
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
     exe_mod.addImport("what-changed", lib_mod);
+    exe_mod.addImport("log", log_mod);
 
     const exe = b.addExecutable(.{
         .name = "what-changed",
@@ -83,10 +126,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .ReleaseFast,
     });
+    release_mod.addImport("log", log_mod);
     release_mod.addImport("what-changed", b.addModule("what-changed-release", .{
         .root_source_file = b.path("src/lib/lib.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .imports = &.{.{ .name = "log", .module = log_mod }},
     }));
 
     const release_exe = b.addExecutable(.{
@@ -119,6 +164,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/lib/lib.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .imports = &.{.{ .name = "log", .module = log_mod }},
     }));
 
     const perf = b.addExecutable(.{

@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const value = @import("value.zig");
 const failure = @import("failure.zig");
 
@@ -72,6 +81,12 @@ const Parser = struct {
     allocator: std.mem.Allocator,
 
     //
+    // Where this parser's own branch markers go. Carried here rather than passed to each method,
+    // because every one of them already has the parser.
+    //
+    log: Log = .{},
+
+    //
     // Mutable, because a sequence item that carries its value on the dash's own line is handled by
     // rewriting that line: the dash is dropped and the line is re-measured as if the value had been
     // written on a line of its own, at the column it actually starts in. Every block parser below
@@ -88,9 +103,11 @@ const Parser = struct {
     // Records a syntax error and returns the error to return.
     //
     fn syntax(self: *Parser, line: usize, column: usize, message: []const u8) Error {
-        if (self.err == null) {
-            self.err = .{ .message = message, .line = line, .column = column };
-        }
+        // Every caller hands the error straight back, so nothing parses on after one and there is
+        // never a second to drop. Asserted rather than guarded against: a guard here would be a
+        // branch nothing can take, and this says the same thing where the language can check it.
+        std.debug.assert(self.err == null);
+        self.err = .{ .message = message, .line = line, .column = column };
         return error.Syntax;
     }
 
@@ -98,7 +115,10 @@ const Parser = struct {
     // The line the parser is looking at, or null at the end of the input.
     //
     fn peek(self: *const Parser) ?Line {
-        if (self.index >= self.lines.len) return null;
+        if (self.index >= self.lines.len) {
+            if (an) annotate(self.log, "peek-end-of-input", "", .{});
+            return null;
+        }
         return self.lines[self.index];
     }
 
@@ -109,22 +129,33 @@ const Parser = struct {
     // is the whole of YAML's block-level structure, and it is decided per block rather than once
     // for the document, which is what lets a mapping hold sequences and vice versa.
     //
-    fn parseBlock(self: *Parser, indent: usize) Error!Value {
-        const line = self.peek() orelse return .null;
-        if (isSequenceEntry(line.content)) {
-            return self.parseSequence(indent);
+    fn parseBlock(self: *Parser, indent: usize, log: Log) Error!Value {
+        // Every caller has already read the line this starts at: `parse` checks the document holds
+        // one, and both block parsers peek before descending.
+        const line = self.peek() orelse unreachable;
+        if (isSequenceEntry(line.content, self.log)) {
+            if (an) annotate(self.log, "parseBlock-a-sequence", "", .{});
+            return self.parseSequence(indent, log);
         }
-        return self.parseMapping(indent);
+        return self.parseMapping(indent, log);
     }
 
     //
     // Parses consecutive `- item` lines at one indentation into an array.
     //
-    fn parseSequence(self: *Parser, indent: usize) Error!Value {
+    fn parseSequence(self: *Parser, indent: usize, log: Log) Error!Value {
         var array = value.newArray(self.allocator);
 
-        while (self.peek()) |line| {
-            if (line.indent != indent or !isSequenceEntry(line.content)) break;
+        while (true) {
+            if (an) annotate(self.log, "parseSequence-items-iteration", "", .{});
+            const line = self.peek() orelse {
+                if (an) annotate(self.log, "parseSequence-end-of-input", "", .{});
+                break;
+            };
+            if (line.indent != indent or !isSequenceEntry(line.content, self.log)) {
+                if (an) annotate(self.log, "parseSequence-end-of-block", "", .{});
+                break;
+            }
 
             //
             // Everything after the dash and the spaces following it. Its column matters: a mapping
@@ -135,12 +166,14 @@ const Parser = struct {
             const item_column = line.indent + (line.content.len - after_dash.len);
 
             if (after_dash.len == 0) {
+                if (an) annotate(self.log, "parseSequence-bare-dash", "", .{});
                 //
                 // A bare dash: the item is whatever block is indented under it.
                 //
                 self.index += 1;
-                try array.append(try self.parseIndentedBlock(line.indent));
-            } else if (splitMappingEntry(after_dash) != null or isSequenceEntry(after_dash)) {
+                try array.append(try self.parseIndentedBlock(line.indent, log));
+            } else if (splitMappingEntry(after_dash, self.log) != null or isSequenceEntry(after_dash, self.log)) {
+                if (an) annotate(self.log, "parseSequence-block-on-the-dash", "", .{});
                 //
                 // A block starting on the dash's own line. Rewriting the line as if it had been
                 // written at its real column, without the dash, is what lets the block parsers read
@@ -149,8 +182,9 @@ const Parser = struct {
                 // over-indented.
                 //
                 self.lines[self.index] = .{ .indent = item_column, .content = after_dash, .number = line.number };
-                try array.append(try self.parseBlock(item_column));
+                try array.append(try self.parseBlock(item_column, log));
             } else {
+                if (an) annotate(self.log, "parseSequence-plain-item", "", .{});
                 //
                 // A plain value.
                 //
@@ -167,24 +201,36 @@ const Parser = struct {
     //
     // Parses consecutive `key: value` lines at one indentation into an object.
     //
-    fn parseMapping(self: *Parser, indent: usize) Error!Value {
+    fn parseMapping(self: *Parser, indent: usize, log: Log) Error!Value {
         var object: value.Object = .empty;
 
-        while (self.peek()) |line| {
-            if (line.indent != indent or isSequenceEntry(line.content)) break;
+        while (true) {
+            if (an) annotate(self.log, "parseMapping-entries-iteration", "", .{});
+            const line = self.peek() orelse {
+                if (an) annotate(self.log, "parseMapping-end-of-input", "", .{});
+                break;
+            };
+            if (line.indent != indent or isSequenceEntry(line.content, self.log)) {
+                if (an) annotate(self.log, "parseMapping-end-of-block", "", .{});
+                break;
+            }
 
-            const entry = splitMappingEntry(line.content) orelse
+            const entry = splitMappingEntry(line.content, self.log) orelse {
+                if (an) annotate(self.log, "parseMapping-not-a-pair", "", .{});
                 return self.syntax(line.number, line.indent + 1, "expected a \"key: value\" pair");
+            };
 
             const key = try self.parseKey(entry.key, line.number, line.indent + 1);
 
             if (entry.rest.len == 0) {
+                if (an) annotate(self.log, "parseMapping-value-is-below", "", .{});
                 //
                 // Nothing after the colon, so the value is the block underneath.
                 //
                 self.index += 1;
-                try object.put(self.allocator, key, try self.parseIndentedBlock(indent));
+                try object.put(self.allocator, key, try self.parseIndentedBlock(indent, log));
             } else {
+                if (an) annotate(self.log, "parseMapping-value-is-here", "", .{});
                 self.index += 1;
                 const column = line.indent + (line.content.len - entry.rest.len) + 1;
                 try object.put(self.allocator, key, try self.parseScalar(entry.rest, line.number, column));
@@ -203,14 +249,19 @@ const Parser = struct {
     // sequence sit level with the key it belongs to. Anything else has to be indented further, and
     // an owner with nothing under it has the value null.
     //
-    fn parseIndentedBlock(self: *Parser, owner_indent: usize) Error!Value {
-        const line = self.peek() orelse return .null;
+    fn parseIndentedBlock(self: *Parser, owner_indent: usize, log: Log) Error!Value {
+        const line = self.peek() orelse {
+            if (an) annotate(self.log, "parseIndentedBlock-nothing-below", "", .{});
+            return .null;
+        };
 
         if (line.indent > owner_indent) {
-            return self.parseBlock(line.indent);
+            if (an) annotate(self.log, "parseIndentedBlock-deeper", "", .{});
+            return self.parseBlock(line.indent, log);
         }
-        if (line.indent == owner_indent and isSequenceEntry(line.content)) {
-            return self.parseSequence(owner_indent);
+        if (line.indent == owner_indent and isSequenceEntry(line.content, self.log)) {
+            if (an) annotate(self.log, "parseIndentedBlock-level-sequence", "", .{});
+            return self.parseSequence(owner_indent, log);
         }
         return .null;
     }
@@ -224,8 +275,12 @@ const Parser = struct {
     // what the config means.
     //
     fn rejectDanglingIndent(self: *Parser, indent: usize) Error!void {
-        const line = self.peek() orelse return;
+        const line = self.peek() orelse {
+            if (an) annotate(self.log, "rejectDanglingIndent-end-of-input", "", .{});
+            return;
+        };
         if (line.indent > indent) {
+            if (an) annotate(self.log, "rejectDanglingIndent-dangling", "", .{});
             return self.syntax(line.number, line.indent + 1, "this line is indented further than the block it follows, so nothing owns it");
         }
     }
@@ -246,31 +301,41 @@ const Parser = struct {
     //
     fn parseScalar(self: *Parser, text: []const u8, line: usize, column: usize) Error!Value {
         const trimmed = std.mem.trim(u8, text, " ");
-        if (trimmed.len == 0) return .null;
+        // A mapping entry with nothing after its colon and a sequence item with nothing after its
+        // dash are both handled by the caller, so what arrives here always says something.
+        std.debug.assert(trimmed.len != 0);
 
         switch (trimmed[0]) {
             '[', '{' => {
+                if (an) annotate(self.log, "parseScalar-flow-collection", "", .{});
                 var flow = Flow{ .parser = self, .text = trimmed, .line = line, .column = column };
                 const parsed = try flow.parseValue();
                 flow.skipSpaces();
                 if (flow.at < flow.text.len) {
+                    if (an) annotate(self.log, "parseScalar-trailing-text", "", .{});
                     return self.syntax(line, column + flow.at, "unexpected text after the end of the value");
                 }
                 return parsed;
             },
             '"', '\'' => {
+                if (an) annotate(self.log, "parseScalar-quoted", "", .{});
                 var flow = Flow{ .parser = self, .text = trimmed, .line = line, .column = column };
                 const parsed = try flow.parseQuoted();
                 flow.skipSpaces();
                 if (flow.at < flow.text.len) {
+                    if (an) annotate(self.log, "parseScalar-trailing-text-after-quotes", "", .{});
                     return self.syntax(line, column + flow.at, "unexpected text after the end of the quoted value");
                 }
                 return parsed;
             },
             '&', '*', '!', '|', '>', '%', '@', '`' => {
+                if (an) annotate(self.log, "parseScalar-unsupported-feature", "", .{});
                 return self.syntax(line, column, "this YAML feature is not supported by what-changed");
             },
-            else => return try self.plainScalar(trimmed),
+            else => {
+                if (an) annotate(self.log, "parseScalar-plain", "", .{});
+                return try self.plainScalar(trimmed);
+            },
         }
     }
 
@@ -279,18 +344,32 @@ const Parser = struct {
     // YAML gives a meaning to and treating everything else as a string.
     //
     fn plainScalar(self: *Parser, text: []const u8) Error!Value {
-        if (isNull(text)) return .null;
-        if (isTrue(text)) return value.boolean(true);
-        if (isFalse(text)) return value.boolean(false);
+        if (isNull(text)) {
+            if (an) annotate(self.log, "plainScalar-null", "", .{});
+            return .null;
+        }
+        if (isTrue(text)) {
+            if (an) annotate(self.log, "plainScalar-true", "", .{});
+            return value.boolean(true);
+        }
+        if (isFalse(text)) {
+            if (an) annotate(self.log, "plainScalar-false", "", .{});
+            return value.boolean(false);
+        }
 
         if (std.fmt.parseInt(i64, text, 10)) |whole| {
+            if (an) annotate(self.log, "plainScalar-whole-number", "", .{});
             return value.int(whole);
-        } else |_| {}
+        } else |_| {
+            if (an) annotate(self.log, "plainScalar-not-a-whole-number", "", .{});
+        }
 
-        if (looksLikeFloat(text)) {
-            if (std.fmt.parseFloat(f64, text)) |number| {
-                return .{ .float = number };
-            } else |_| {}
+        if (looksLikeFloat(text, self.log)) {
+            if (an) annotate(self.log, "plainScalar-looks-like-a-float", "", .{});
+            // A sign, digits, at most one dot and a whole exponent is exactly what the float parser
+            // reads, so it cannot refuse what the check above accepted.
+            const number = std.fmt.parseFloat(f64, text) catch unreachable;
+            return .{ .float = number };
         }
 
         return value.str(try self.allocator.dupe(u8, text));
@@ -310,6 +389,7 @@ const Flow = struct {
 
     fn skipSpaces(self: *Flow) void {
         while (self.at < self.text.len and (self.text[self.at] == ' ' or self.text[self.at] == '\t')) {
+            if (an) annotate(self.parser.log, "skipSpaces-spaces-iteration", "", .{});
             self.at += 1;
         }
     }
@@ -323,7 +403,10 @@ const Flow = struct {
     //
     fn parseValue(self: *Flow) Parser.Error!Value {
         self.skipSpaces();
-        if (self.at >= self.text.len) return self.fail("expected a value");
+        if (self.at >= self.text.len) {
+            if (an) annotate(self.parser.log, "parseValue-nothing-there", "", .{});
+            return self.fail("expected a value");
+        }
 
         return switch (self.text[self.at]) {
             '[' => self.parseSequence(),
@@ -342,21 +425,33 @@ const Flow = struct {
 
         self.skipSpaces();
         if (self.at < self.text.len and self.text[self.at] == ']') {
+            if (an) annotate(self.parser.log, "parseSequence-empty", "", .{});
             self.at += 1;
             return .{ .array = array };
         }
 
         while (true) {
+            if (an) annotate(self.parser.log, "parseSequence-items-iteration", "", .{});
             try array.append(try self.parseValue());
             self.skipSpaces();
-            if (self.at >= self.text.len) return self.fail("this list is missing its closing \"]\"");
+            if (self.at >= self.text.len) {
+                if (an) annotate(self.parser.log, "parseSequence-unclosed", "", .{});
+                return self.fail("this list is missing its closing \"]\"");
+            }
             switch (self.text[self.at]) {
-                ',' => self.at += 1,
+                ',' => {
+                    if (an) annotate(self.parser.log, "parseSequence-comma", "", .{});
+                    self.at += 1;
+                },
                 ']' => {
+                    if (an) annotate(self.parser.log, "parseSequence-closed", "", .{});
                     self.at += 1;
                     return .{ .array = array };
                 },
-                else => return self.fail("expected a \",\" or a \"]\" in this list"),
+                else => {
+                    if (an) annotate(self.parser.log, "parseSequence-unexpected", "", .{});
+                    return self.fail("expected a \",\" or a \"]\" in this list");
+                },
             }
         }
     }
@@ -370,17 +465,23 @@ const Flow = struct {
 
         self.skipSpaces();
         if (self.at < self.text.len and self.text[self.at] == '}') {
+            if (an) annotate(self.parser.log, "parseMapping-empty", "", .{});
             self.at += 1;
             return .{ .object = object };
         }
 
         while (true) {
+            if (an) annotate(self.parser.log, "parseMapping-entries-iteration", "", .{});
             self.skipSpaces();
             const key = try self.parseValue();
-            if (key != .string) return self.fail("a mapping key must be a plain or quoted string");
+            if (key != .string) {
+                if (an) annotate(self.parser.log, "parseMapping-key-is-not-a-string", "", .{});
+                return self.fail("a mapping key must be a plain or quoted string");
+            }
 
             self.skipSpaces();
             if (self.at >= self.text.len or self.text[self.at] != ':') {
+                if (an) annotate(self.parser.log, "parseMapping-no-colon", "", .{});
                 return self.fail("expected a \":\" after this key");
             }
             self.at += 1;
@@ -388,14 +489,24 @@ const Flow = struct {
             try object.put(self.parser.allocator, key.string, try self.parseValue());
 
             self.skipSpaces();
-            if (self.at >= self.text.len) return self.fail("this mapping is missing its closing \"}\"");
+            if (self.at >= self.text.len) {
+                if (an) annotate(self.parser.log, "parseMapping-unclosed", "", .{});
+                return self.fail("this mapping is missing its closing \"}\"");
+            }
             switch (self.text[self.at]) {
-                ',' => self.at += 1,
+                ',' => {
+                    if (an) annotate(self.parser.log, "parseMapping-comma", "", .{});
+                    self.at += 1;
+                },
                 '}' => {
+                    if (an) annotate(self.parser.log, "parseMapping-closed", "", .{});
                     self.at += 1;
                     return .{ .object = object };
                 },
-                else => return self.fail("expected a \",\" or a \"}\" in this mapping"),
+                else => {
+                    if (an) annotate(self.parser.log, "parseMapping-unexpected", "", .{});
+                    return self.fail("expected a \",\" or a \"}\" in this mapping");
+                },
             }
         }
     }
@@ -414,10 +525,13 @@ const Flow = struct {
         errdefer out.deinit(self.parser.allocator);
 
         while (self.at < self.text.len) {
+            if (an) annotate(self.parser.log, "parseQuoted-characters-iteration", "", .{});
             const character = self.text[self.at];
 
             if (character == quote) {
+                if (an) annotate(self.parser.log, "parseQuoted-a-quote", "", .{});
                 if (quote == '\'' and self.at + 1 < self.text.len and self.text[self.at + 1] == '\'') {
+                    if (an) annotate(self.parser.log, "parseQuoted-doubled-quote", "", .{});
                     try out.append(self.parser.allocator, '\'');
                     self.at += 2;
                     continue;
@@ -427,8 +541,12 @@ const Flow = struct {
             }
 
             if (quote == '"' and character == '\\') {
+                if (an) annotate(self.parser.log, "parseQuoted-an-escape", "", .{});
                 self.at += 1;
-                if (self.at >= self.text.len) return self.fail("this string ends in a backslash");
+                if (self.at >= self.text.len) {
+                    if (an) annotate(self.parser.log, "parseQuoted-ends-in-a-backslash", "", .{});
+                    return self.fail("this string ends in a backslash");
+                }
                 try out.append(self.parser.allocator, switch (self.text[self.at]) {
                     'n' => '\n',
                     't' => '\t',
@@ -437,7 +555,10 @@ const Flow = struct {
                     '\\' => '\\',
                     '"' => '"',
                     '/' => '/',
-                    else => return self.fail("unsupported escape in this string"),
+                    else => {
+                        if (an) annotate(self.parser.log, "parseQuoted-unsupported-escape", "", .{});
+                        return self.fail("unsupported escape in this string");
+                    },
                 });
                 self.at += 1;
                 continue;
@@ -456,14 +577,28 @@ const Flow = struct {
     //
     fn parsePlain(self: *Flow) Parser.Error!Value {
         const start = self.at;
-        while (self.at < self.text.len) {
+        while (true) {
+            if (an) annotate(self.parser.log, "parsePlain-characters-iteration", "", .{});
+            if (self.at >= self.text.len) {
+                if (an) annotate(self.parser.log, "parsePlain-end-of-text", "", .{});
+                break;
+            }
             switch (self.text[self.at]) {
-                ',', ']', '}', ':' => break,
-                else => self.at += 1,
+                ',', ']', '}', ':' => {
+                    if (an) annotate(self.parser.log, "parsePlain-end-of-value", "", .{});
+                    break;
+                },
+                else => {
+                    if (an) annotate(self.parser.log, "parsePlain-another-character", "", .{});
+                    self.at += 1;
+                },
             }
         }
         const text = std.mem.trim(u8, self.text[start..self.at], " ");
-        if (text.len == 0) return self.fail("expected a value");
+        if (text.len == 0) {
+            if (an) annotate(self.parser.log, "parsePlain-nothing-there", "", .{});
+            return self.fail("expected a value");
+        }
         return self.parser.plainScalar(text);
     }
 };
@@ -483,24 +618,34 @@ const MappingEntry = struct {
 // The colon has to be followed by a space or by the end of the line. Without that rule a value like
 // `https://example.com` would be read as a key, because it has a colon in it.
 //
-pub fn splitMappingEntry(content: []const u8) ?MappingEntry {
+pub fn splitMappingEntry(content: []const u8, log: Log) ?MappingEntry {
     var quote: ?u8 = null;
     var at: usize = 0;
 
     while (at < content.len) : (at += 1) {
+        if (an) annotate(log, "splitMappingEntry-characters-iteration", "", .{});
         const character = content[at];
 
         if (quote) |open| {
-            if (character == open) quote = null;
+            if (an) annotate(log, "splitMappingEntry-inside-quotes", "", .{});
+            if (character == open) {
+                if (an) annotate(log, "splitMappingEntry-quotes-closed", "", .{});
+                quote = null;
+            }
             continue;
         }
         if (character == '"' or character == '\'') {
+            if (an) annotate(log, "splitMappingEntry-quotes-opened", "", .{});
             quote = character;
             continue;
         }
         if (character == ':' and (at + 1 == content.len or content[at + 1] == ' ')) {
+            if (an) annotate(log, "splitMappingEntry-a-colon", "", .{});
             const key = std.mem.trim(u8, content[0..at], " ");
-            if (key.len == 0) return null;
+            if (key.len == 0) {
+                if (an) annotate(log, "splitMappingEntry-no-key", "", .{});
+                return null;
+            }
             return .{ .key = key, .rest = std.mem.trim(u8, content[at + 1 ..], " ") };
         }
     }
@@ -514,8 +659,11 @@ pub fn splitMappingEntry(content: []const u8) ?MappingEntry {
 // The dash has to be alone or followed by a space, so the negative number `-5` is a value rather
 // than an empty list item.
 //
-pub fn isSequenceEntry(content: []const u8) bool {
-    if (content.len == 0 or content[0] != '-') return false;
+pub fn isSequenceEntry(content: []const u8, log: Log) bool {
+    if (content.len == 0 or content[0] != '-') {
+        if (an) annotate(log, "isSequenceEntry-no-dash", "", .{});
+        return false;
+    }
     return content.len == 1 or content[1] == ' ';
 }
 
@@ -548,30 +696,57 @@ pub fn isFalse(text: []const u8) bool {
 // Checked before parsing rather than relying on the parse failing, because Zig's float parser
 // accepts words this tool must keep as strings, "inf" and "nan" among them.
 //
-pub fn looksLikeFloat(text: []const u8) bool {
+pub fn looksLikeFloat(text: []const u8, log: Log) bool {
     var at: usize = 0;
-    if (at < text.len and (text[at] == '+' or text[at] == '-')) at += 1;
+    if (at < text.len and (text[at] == '+' or text[at] == '-')) {
+        if (an) annotate(log, "looksLikeFloat-signed", "", .{});
+        at += 1;
+    }
 
     var digits: usize = 0;
     var dots: usize = 0;
     while (at < text.len) : (at += 1) {
+        if (an) annotate(log, "looksLikeFloat-characters-iteration", "", .{});
         switch (text[at]) {
-            '0'...'9' => digits += 1,
-            '.' => dots += 1,
+            '0'...'9' => {
+                if (an) annotate(log, "looksLikeFloat-a-digit", "", .{});
+                digits += 1;
+            },
+            '.' => {
+                if (an) annotate(log, "looksLikeFloat-a-dot", "", .{});
+                dots += 1;
+            },
             'e', 'E' => {
+                if (an) annotate(log, "looksLikeFloat-an-exponent", "", .{});
                 //
                 // An exponent has to come after some digits and be a whole number itself.
                 //
-                if (digits == 0 or at + 1 >= text.len) return false;
+                if (digits == 0 or at + 1 >= text.len) {
+                    if (an) annotate(log, "looksLikeFloat-exponent-with-nothing-around-it", "", .{});
+                    return false;
+                }
                 var exponent = at + 1;
-                if (text[exponent] == '+' or text[exponent] == '-') exponent += 1;
-                if (exponent >= text.len) return false;
+                if (text[exponent] == '+' or text[exponent] == '-') {
+                    if (an) annotate(log, "looksLikeFloat-signed-exponent", "", .{});
+                    exponent += 1;
+                }
+                if (exponent >= text.len) {
+                    if (an) annotate(log, "looksLikeFloat-nothing-after-the-sign", "", .{});
+                    return false;
+                }
                 while (exponent < text.len) : (exponent += 1) {
-                    if (!std.ascii.isDigit(text[exponent])) return false;
+                    if (an) annotate(log, "looksLikeFloat-exponent-digits-iteration", "", .{});
+                    if (!std.ascii.isDigit(text[exponent])) {
+                        if (an) annotate(log, "looksLikeFloat-exponent-is-not-whole", "", .{});
+                        return false;
+                    }
                 }
                 return dots <= 1;
             },
-            else => return false,
+            else => {
+                if (an) annotate(log, "looksLikeFloat-not-a-number-at-all", "", .{});
+                return false;
+            },
         }
     }
 
@@ -584,22 +759,29 @@ pub fn looksLikeFloat(text: []const u8) bool {
 // A "#" only starts a comment at the start of a line or after whitespace, which is what keeps a
 // value like "a#b" whole.
 //
-pub fn stripComment(content: []const u8) []const u8 {
+pub fn stripComment(content: []const u8, log: Log) []const u8 {
     var quote: ?u8 = null;
     var at: usize = 0;
 
     while (at < content.len) : (at += 1) {
+        if (an) annotate(log, "stripComment-characters-iteration", "", .{});
         const character = content[at];
 
         if (quote) |open| {
-            if (character == open) quote = null;
+            if (an) annotate(log, "stripComment-inside-quotes", "", .{});
+            if (character == open) {
+                if (an) annotate(log, "stripComment-quotes-closed", "", .{});
+                quote = null;
+            }
             continue;
         }
         if (character == '"' or character == '\'') {
+            if (an) annotate(log, "stripComment-quotes-opened", "", .{});
             quote = character;
             continue;
         }
         if (character == '#' and (at == 0 or content[at - 1] == ' ' or content[at - 1] == '\t')) {
+            if (an) annotate(log, "stripComment-a-comment", "", .{});
             return std.mem.trimEnd(u8, content[0..at], " \t");
         }
     }
@@ -611,39 +793,52 @@ pub fn stripComment(content: []const u8) []const u8 {
 // Splits the text into the lines the parser walks, dropping blanks and comments and measuring each
 // remaining line's indentation.
 //
-fn readLines(allocator: std.mem.Allocator, text: []const u8, err: *?SyntaxError) error{ Syntax, OutOfMemory }![]Line {
+fn readLines(allocator: std.mem.Allocator, text: []const u8, err: *?SyntaxError, log: Log) error{ Syntax, OutOfMemory }![]Line {
     var lines: std.ArrayList(Line) = .empty;
     errdefer lines.deinit(allocator);
 
     var number: usize = 0;
     var walker = std.mem.splitScalar(u8, text, '\n');
     while (walker.next()) |raw_line| {
+        if (an) annotate(log, "readLines-lines-iteration", "", .{});
         number += 1;
         const line = std.mem.trimEnd(u8, raw_line, "\r");
 
         var indent: usize = 0;
-        while (indent < line.len and line[indent] == ' ') indent += 1;
+        while (indent < line.len and line[indent] == ' ') {
+            if (an) annotate(log, "readLines-indent-iteration", "", .{});
+            indent += 1;
+        }
 
         //
         // A tab in the indentation is refused rather than counted. YAML forbids it, and guessing a
         // width for it would mean this tool and every editor disagreeing about what the file says.
         //
         if (indent < line.len and line[indent] == '\t') {
+            if (an) annotate(log, "readLines-a-tab", "", .{});
             err.* = .{ .message = "a tab is used for indentation, which YAML does not allow", .line = number, .column = indent + 1 };
             return error.Syntax;
         }
 
-        const content = stripComment(line[indent..]);
-        if (content.len == 0) continue;
+        const content = stripComment(line[indent..], log);
+        if (content.len == 0) {
+            if (an) annotate(log, "readLines-a-blank-line", "", .{});
+            continue;
+        }
 
         //
         // The document markers are accepted and dropped, so a config that starts with "---" reads
         // the same as one that does not. A second document is refused: this tool reads one config,
         // and quietly using the first of several would hide the rest.
         //
-        if (std.mem.eql(u8, content, "...")) continue;
+        if (std.mem.eql(u8, content, "...")) {
+            if (an) annotate(log, "readLines-end-of-document", "", .{});
+            continue;
+        }
         if (std.mem.eql(u8, content, "---")) {
+            if (an) annotate(log, "readLines-start-of-document", "", .{});
             if (lines.items.len > 0) {
+                if (an) annotate(log, "readLines-a-second-document", "", .{});
                 err.* = .{ .message = "more than one document in the file, which what-changed does not support", .line = number, .column = indent + 1 };
                 return error.Syntax;
             }
@@ -662,14 +857,21 @@ fn readLines(allocator: std.mem.Allocator, text: []const u8, err: *?SyntaxError)
 // An empty document is null, which is what the `yaml` package returns and what the config checks
 // then complain about by name.
 //
-pub fn parse(allocator: std.mem.Allocator, text: []const u8, err: *?SyntaxError) error{ Syntax, OutOfMemory }!Value {
-    const lines = try readLines(allocator, text, err);
-    if (lines.len == 0) return .null;
+pub fn parse(allocator: std.mem.Allocator, text: []const u8, err: *?SyntaxError, log: Log) error{ Syntax, OutOfMemory }!Value {
+    const lines = try readLines(allocator, text, err, log);
+    if (lines.len == 0) {
+        if (an) annotate(log, "parse-an-empty-document", "", .{});
+        return .null;
+    }
 
-    var parser = Parser{ .allocator = allocator, .lines = lines };
-    const parsed = parser.parseBlock(lines[0].indent) catch |caught| switch (caught) {
-        error.OutOfMemory => return error.OutOfMemory,
+    var parser = Parser{ .allocator = allocator, .lines = lines, .log = log };
+    const parsed = parser.parseBlock(lines[0].indent, log) catch |caught| switch (caught) {
+        error.OutOfMemory => {
+            if (an) annotate(log, "parse-no-room", "", .{});
+            return error.OutOfMemory;
+        },
         error.Syntax => {
+            if (an) annotate(log, "parse-a-syntax-error", "", .{});
             err.* = parser.err;
             return error.Syntax;
         },
@@ -680,6 +882,7 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8, err: *?SyntaxError)
     // could not account for. Reported rather than ignored, for the same reason a misaligned key is.
     //
     if (parser.peek()) |line| {
+        if (an) annotate(log, "parse-a-line-left-over", "", .{});
         err.* = .{ .message = "this line does not belong to the document above it", .line = line.number, .column = line.indent + 1 };
         return error.Syntax;
     }
@@ -692,15 +895,16 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8, err: *?SyntaxError)
 //
 pub fn parseOrFail(allocator: std.mem.Allocator, text: []const u8, description: []const u8, fail: *Failure) failure.Error!Value {
     var err: ?SyntaxError = null;
-    return parse(allocator, text, &err) catch |caught| switch (caught) {
+    return parse(allocator, text, &err, fail.log) catch |caught| switch (caught) {
         error.OutOfMemory => error.OutOfMemory,
         error.Syntax => {
-            if (err) |detail| {
-                return fail.set("{s} is not valid YAML: {s} at line {d}, column {d}", .{
-                    description, detail.message, detail.line, detail.column,
-                });
-            }
-            return fail.set("{s} is not valid YAML", .{description});
+            if (an) annotate(fail.log, "parseOrFail-a-syntax-error", "", .{});
+            // Every refusal is recorded with the line and column it happened at, both in
+            // `readLines` and in the parser, so one always arrives here.
+            const detail = err orelse unreachable;
+            return fail.set("{s} is not valid YAML: {s} at line {d}, column {d}", .{
+                description, detail.message, detail.line, detail.column,
+            });
         },
     };
 }
@@ -711,34 +915,74 @@ pub fn parseOrFail(allocator: std.mem.Allocator, text: []const u8, description: 
 // Erring towards quoting is safe: a quoted string always reads back as itself. Erring the other way
 // is not, because a plain `true`, `1.5` or empty string reads back as something else entirely.
 //
-pub fn needsQuoting(text: []const u8) bool {
-    if (text.len == 0) return true;
-    if (isNull(text) or isTrue(text) or isFalse(text)) return true;
-    if (std.fmt.parseInt(i64, text, 10)) |_| return true else |_| {}
-    if (looksLikeFloat(text)) return true;
+pub fn needsQuoting(text: []const u8, log: Log) bool {
+    if (text.len == 0) {
+        if (an) annotate(log, "needsQuoting-empty", "", .{});
+        return true;
+    }
+    if (isNull(text) or isTrue(text) or isFalse(text)) {
+        if (an) annotate(log, "needsQuoting-a-yaml-word", "", .{});
+        return true;
+    }
+    if (std.fmt.parseInt(i64, text, 10)) |_| {
+        if (an) annotate(log, "needsQuoting-a-whole-number", "", .{});
+        return true;
+    } else |_| {
+        if (an) annotate(log, "needsQuoting-not-a-whole-number", "", .{});
+    }
+    if (looksLikeFloat(text, log)) {
+        if (an) annotate(log, "needsQuoting-a-float", "", .{});
+        return true;
+    }
 
     //
     // Leading or trailing whitespace does not survive plain style, since the reader trims it.
     //
-    if (text[0] == ' ' or text[text.len - 1] == ' ') return true;
+    if (text[0] == ' ' or text[text.len - 1] == ' ') {
+        if (an) annotate(log, "needsQuoting-padded", "", .{});
+        return true;
+    }
 
     //
     // An indicator at the start of a scalar means something to YAML.
     //
     switch (text[0]) {
-        '-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`' => return true,
-        else => {},
+        '-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`' => {
+            if (an) annotate(log, "needsQuoting-starts-with-an-indicator", "", .{});
+            return true;
+        },
+        else => {
+            if (an) annotate(log, "needsQuoting-starts-with-an-ordinary-character", "", .{});
+        },
     }
 
     //
     // Inside the text, only the sequences that would end the scalar or start a comment matter.
     //
     for (text, 0..) |character, at| {
+        if (an) annotate(log, "needsQuoting-characters-iteration", "", .{});
         switch (character) {
-            '\n', '\r', '\t' => return true,
-            ':' => if (at + 1 == text.len or text[at + 1] == ' ') return true,
-            '#' => if (at > 0 and text[at - 1] == ' ') return true,
-            else => {},
+            '\n', '\r', '\t' => {
+                if (an) annotate(log, "needsQuoting-whitespace-inside", "", .{});
+                return true;
+            },
+            ':' => {
+                if (an) annotate(log, "needsQuoting-a-colon", "", .{});
+                if (at + 1 == text.len or text[at + 1] == ' ') {
+                    if (an) annotate(log, "needsQuoting-a-colon-that-ends-the-key", "", .{});
+                    return true;
+                }
+            },
+            '#' => {
+                if (an) annotate(log, "needsQuoting-a-hash", "", .{});
+                if (at > 0 and text[at - 1] == ' ') {
+                    if (an) annotate(log, "needsQuoting-a-hash-that-starts-a-comment", "", .{});
+                    return true;
+                }
+            },
+            else => {
+                if (an) annotate(log, "needsQuoting-an-ordinary-character", "", .{});
+            },
         }
     }
 
@@ -748,20 +992,40 @@ pub fn needsQuoting(text: []const u8) bool {
 //
 // Writes a string as YAML, quoting it only when it would not read back as itself.
 //
-fn writeString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) std.mem.Allocator.Error!void {
-    if (!needsQuoting(text)) {
+fn writeString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8, log: Log) std.mem.Allocator.Error!void {
+    if (!needsQuoting(text, log)) {
+        if (an) annotate(log, "writeString-plain", "", .{});
         return out.appendSlice(allocator, text);
     }
 
     try out.append(allocator, '"');
     for (text) |character| {
+        if (an) annotate(log, "writeString-characters-iteration", "", .{});
         switch (character) {
-            '"' => try out.appendSlice(allocator, "\\\""),
-            '\\' => try out.appendSlice(allocator, "\\\\"),
-            '\n' => try out.appendSlice(allocator, "\\n"),
-            '\r' => try out.appendSlice(allocator, "\\r"),
-            '\t' => try out.appendSlice(allocator, "\\t"),
-            else => try out.append(allocator, character),
+            '"' => {
+                if (an) annotate(log, "writeString-a-quote", "", .{});
+                try out.appendSlice(allocator, "\\\"");
+            },
+            '\\' => {
+                if (an) annotate(log, "writeString-a-backslash", "", .{});
+                try out.appendSlice(allocator, "\\\\");
+            },
+            '\n' => {
+                if (an) annotate(log, "writeString-a-newline", "", .{});
+                try out.appendSlice(allocator, "\\n");
+            },
+            '\r' => {
+                if (an) annotate(log, "writeString-a-carriage-return", "", .{});
+                try out.appendSlice(allocator, "\\r");
+            },
+            '\t' => {
+                if (an) annotate(log, "writeString-a-tab", "", .{});
+                try out.appendSlice(allocator, "\\t");
+            },
+            else => {
+                if (an) annotate(log, "writeString-an-ordinary-character", "", .{});
+                try out.append(allocator, character);
+            },
         }
     }
     try out.append(allocator, '"');
@@ -770,14 +1034,32 @@ fn writeString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []co
 //
 // Writes a scalar: anything that is not an array or an object.
 //
-fn writeScalar(out: *std.ArrayList(u8), allocator: std.mem.Allocator, node: Value) std.mem.Allocator.Error!void {
+fn writeScalar(out: *std.ArrayList(u8), allocator: std.mem.Allocator, node: Value, log: Log) std.mem.Allocator.Error!void {
     switch (node) {
-        .null => try out.appendSlice(allocator, "null"),
-        .bool => |flag| try out.appendSlice(allocator, if (flag) "true" else "false"),
-        .integer => |whole| try out.print(allocator, "{d}", .{whole}),
-        .float => |number| try out.print(allocator, "{d}", .{number}),
-        .number_string => |text| try out.appendSlice(allocator, text),
-        .string => |text| try writeString(out, allocator, text),
+        .null => {
+            if (an) annotate(log, "writeScalar-null", "", .{});
+            try out.appendSlice(allocator, "null");
+        },
+        .bool => |flag| {
+            if (an) annotate(log, "writeScalar-a-bool", "", .{});
+            try out.appendSlice(allocator, if (flag) "true" else "false");
+        },
+        .integer => |whole| {
+            if (an) annotate(log, "writeScalar-a-whole-number", "", .{});
+            try out.print(allocator, "{d}", .{whole});
+        },
+        .float => |number| {
+            if (an) annotate(log, "writeScalar-a-float", "", .{});
+            try out.print(allocator, "{d}", .{number});
+        },
+        .number_string => |text| {
+            if (an) annotate(log, "writeScalar-a-number-as-text", "", .{});
+            try out.appendSlice(allocator, text);
+        },
+        .string => |text| {
+            if (an) annotate(log, "writeScalar-a-string", "", .{});
+            try writeString(out, allocator, text, log);
+        },
         .array, .object => unreachable, // Handled by writeNode.
     }
 }
@@ -800,49 +1082,74 @@ fn isBlock(node: Value) bool {
 // sequence item needs: `- ` is printed, and then the item's first key has to land right after it
 // rather than on a line of its own.
 //
-fn writeNode(out: *std.ArrayList(u8), allocator: std.mem.Allocator, node: Value, indent: usize, first_line_written: bool) std.mem.Allocator.Error!void {
+fn writeNode(out: *std.ArrayList(u8), allocator: std.mem.Allocator, node: Value, indent: usize, first_line_written: bool, log: Log) std.mem.Allocator.Error!void {
     switch (node) {
         .array => |array| {
+            if (an) annotate(log, "writeNode-an-array", "", .{});
             if (array.items.len == 0) {
-                if (!first_line_written) try writeIndent(out, allocator, indent);
+                if (an) annotate(log, "writeNode-an-empty-array", "", .{});
+                if (!first_line_written) {
+                    if (an) annotate(log, "writeNode-empty-array-on-its-own-line", "", .{});
+                    try writeIndent(out, allocator, indent);
+                }
                 try out.appendSlice(allocator, "[]");
                 return;
             }
             for (array.items, 0..) |item, at| {
+                if (an) annotate(log, "writeNode-items-iteration", "", .{});
                 if (at > 0 or !first_line_written) {
-                    if (at > 0) try out.append(allocator, '\n');
+                    if (an) annotate(log, "writeNode-item-on-its-own-line", "", .{});
+                    if (at > 0) {
+                        if (an) annotate(log, "writeNode-a-later-item", "", .{});
+                        try out.append(allocator, '\n');
+                    }
                     try writeIndent(out, allocator, indent);
                 }
                 try out.appendSlice(allocator, "- ");
-                try writeNode(out, allocator, item, indent + 2, true);
+                try writeNode(out, allocator, item, indent + 2, true, log);
             }
         },
         .object => |object| {
+            if (an) annotate(log, "writeNode-an-object", "", .{});
             if (object.count() == 0) {
-                if (!first_line_written) try writeIndent(out, allocator, indent);
+                if (an) annotate(log, "writeNode-an-empty-object", "", .{});
+                if (!first_line_written) {
+                    if (an) annotate(log, "writeNode-empty-object-on-its-own-line", "", .{});
+                    try writeIndent(out, allocator, indent);
+                }
                 try out.appendSlice(allocator, "{}");
                 return;
             }
             var at: usize = 0;
             var walker = object.iterator();
             while (walker.next()) |entry| : (at += 1) {
+                if (an) annotate(log, "writeNode-entries-iteration", "", .{});
                 if (at > 0 or !first_line_written) {
-                    if (at > 0) try out.append(allocator, '\n');
+                    if (an) annotate(log, "writeNode-entry-on-its-own-line", "", .{});
+                    if (at > 0) {
+                        if (an) annotate(log, "writeNode-a-later-entry", "", .{});
+                        try out.append(allocator, '\n');
+                    }
                     try writeIndent(out, allocator, indent);
                 }
-                try writeString(out, allocator, entry.key_ptr.*);
+                try writeString(out, allocator, entry.key_ptr.*, log);
                 try out.append(allocator, ':');
 
                 if (isBlock(entry.value_ptr.*)) {
+                    if (an) annotate(log, "writeNode-value-is-a-block", "", .{});
                     try out.append(allocator, '\n');
-                    try writeNode(out, allocator, entry.value_ptr.*, indent + 2, false);
+                    try writeNode(out, allocator, entry.value_ptr.*, indent + 2, false, log);
                 } else {
+                    if (an) annotate(log, "writeNode-value-is-on-this-line", "", .{});
                     try out.append(allocator, ' ');
-                    try writeNode(out, allocator, entry.value_ptr.*, indent, true);
+                    try writeNode(out, allocator, entry.value_ptr.*, indent, true, log);
                 }
             }
         },
-        else => try writeScalar(out, allocator, node),
+        else => {
+            if (an) annotate(log, "writeNode-a-scalar", "", .{});
+            try writeScalar(out, allocator, node, log);
+        },
     }
 }
 
@@ -858,11 +1165,11 @@ fn writeIndent(out: *std.ArrayList(u8), allocator: std.mem.Allocator, indent: us
 //
 // No trailing newline, because the caller prints the result as one line of output and adds its own.
 //
-pub fn stringify(allocator: std.mem.Allocator, root: Value) std.mem.Allocator.Error![]const u8 {
+pub fn stringify(allocator: std.mem.Allocator, root: Value, log: Log) std.mem.Allocator.Error![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
-    try writeNode(&out, allocator, root, 0, false);
+    try writeNode(&out, allocator, root, 0, false, log);
     return out.toOwnedSlice(allocator);
 }
 

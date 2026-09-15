@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const value = @import("value.zig");
 const file_hashes = @import("file_hashes.zig");
 const file_hash = @import("file_hash.zig");
@@ -97,9 +106,10 @@ pub const ChangedFile = struct {
 //
 // Renders a list of changes as the array the machine-readable formats print.
 //
-pub fn toValueArray(allocator: std.mem.Allocator, changes: []const ChangedFile) std.mem.Allocator.Error!value.Value {
+pub fn toValueArray(allocator: std.mem.Allocator, changes: []const ChangedFile, log: Log) std.mem.Allocator.Error!value.Value {
     var array = value.newArray(allocator);
     for (changes) |change| {
+        if (an) annotate(log, "toValueArray-changes-iteration", "", .{});
         try array.append(try change.toValue(allocator));
     }
     return .{ .array = array };
@@ -108,9 +118,17 @@ pub fn toValueArray(allocator: std.mem.Allocator, changes: []const ChangedFile) 
 //
 // Orders two changes by path, for sorting.
 //
-fn lessThanChange(_: void, left: ChangedFile, right: ChangedFile) bool {
+fn lessThanChange(_: Ordering, left: ChangedFile, right: ChangedFile) bool {
     return std.mem.order(u8, left.path, right.path) == .lt;
 }
+
+//
+// What the sort carries into the comparison above. `std.mem.sort` fixes what a comparison takes, so
+// there has to be a context type even when the comparison reads nothing from it.
+//
+pub const Ordering = struct {
+    log: Log = .{},
+};
 
 //
 // Compares the working tree's file hashes against the baseline recorded at the last passing run and
@@ -121,11 +139,12 @@ fn lessThanChange(_: void, left: ChangedFile, right: ChangedFile) bool {
 // `current` for a different reason, so they are reported as their own kind rather than being counted
 // among the deletions.
 //
-pub fn diffFileHashes(allocator: std.mem.Allocator, current: *const FileHashes, baseline: *const FileHashes, unreadable: []const UnreadableFile) std.mem.Allocator.Error![]ChangedFile {
+pub fn diffFileHashes(allocator: std.mem.Allocator, current: *const FileHashes, baseline: *const FileHashes, unreadable: []const UnreadableFile, log: Log) std.mem.Allocator.Error![]ChangedFile {
     var changes: std.ArrayList(ChangedFile) = .empty;
 
     var could_not_read: std.StringArrayHashMapUnmanaged(void) = .empty;
     for (unreadable) |file| {
+        if (an) annotate(log, "diffFileHashes-unreadable-iteration", "", .{});
         try could_not_read.put(allocator, file.path, {});
         try changes.append(allocator, .{
             .path = file.path,
@@ -138,28 +157,33 @@ pub fn diffFileHashes(allocator: std.mem.Allocator, current: *const FileHashes, 
 
     var walker = current.iterator();
     while (walker.next()) |entry| {
+        if (an) annotate(log, "diffFileHashes-current-iteration", "", .{});
         const relative_path = entry.key_ptr.*;
         const hash = entry.value_ptr.*;
 
         const previous_hash = baseline.get(relative_path) orelse {
+            if (an) annotate(log, "diffFileHashes-added", "", .{});
             try changes.append(allocator, .{ .path = relative_path, .kind = .added, .hash = hash, .previous_hash = "" });
             continue;
         };
         if (!std.mem.eql(u8, previous_hash, hash)) {
+            if (an) annotate(log, "diffFileHashes-modified", "", .{});
             try changes.append(allocator, .{ .path = relative_path, .kind = .modified, .hash = hash, .previous_hash = previous_hash });
         }
     }
 
     var recorded = baseline.iterator();
     while (recorded.next()) |entry| {
+        if (an) annotate(log, "diffFileHashes-recorded-iteration", "", .{});
         const relative_path = entry.key_ptr.*;
         if (current.get(relative_path) == null and !could_not_read.contains(relative_path)) {
+            if (an) annotate(log, "diffFileHashes-deleted", "", .{});
             try changes.append(allocator, .{ .path = relative_path, .kind = .deleted, .hash = "", .previous_hash = entry.value_ptr.* });
         }
     }
 
     const sorted = try changes.toOwnedSlice(allocator);
-    std.mem.sort(ChangedFile, sorted, {}, lessThanChange);
+    std.mem.sort(ChangedFile, sorted, Ordering{ .log = log }, lessThanChange);
     return sorted;
 }
 
@@ -170,20 +194,18 @@ pub fn diffFileHashes(allocator: std.mem.Allocator, current: *const FileHashes, 
 // A file that could not be read has the reason in brackets after the path. Only that kind carries
 // one, so every other line is exactly what it was.
 //
-pub fn formatChangedFiles(allocator: std.mem.Allocator, changes: []const ChangedFile) std.mem.Allocator.Error![][]const u8 {
+pub fn formatChangedFiles(allocator: std.mem.Allocator, changes: []const ChangedFile, log: Log) std.mem.Allocator.Error![][]const u8 {
     var lines: std.ArrayList([]const u8) = .empty;
 
     for (changes) |change| {
+        if (an) annotate(log, "formatChangedFiles-changes-iteration", "", .{});
         const shown_hash = if (change.hash.len == 0) change.previous_hash else change.hash;
         const short_hash = shown_hash[0..@min(16, shown_hash.len)];
         const line = try std.fmt.allocPrint(allocator, "  {c}  {s}  {s}", .{
             change.kind.marker(), short_hash, change.path,
         });
 
-        try lines.append(allocator, if (change.reason.len == 0)
-            line
-        else
-            try std.fmt.allocPrint(allocator, "{s}  ({s})", .{ line, change.reason }));
+        try lines.append(allocator, if (change.reason.len == 0) line else try std.fmt.allocPrint(allocator, "{s}  ({s})", .{ line, change.reason }));
     }
 
     return lines.toOwnedSlice(allocator);

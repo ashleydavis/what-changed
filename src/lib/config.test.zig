@@ -11,7 +11,7 @@ const testing = std.testing;
 // Parses a config in a test, so each case is one line rather than four.
 //
 fn parseForTest(allocator: std.mem.Allocator, raw_text: []const u8, format: config.ConfigFormat) !config.Config {
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     return config.parseConfig(allocator, raw_text, format, &fail) catch |err| {
         std.debug.print("config error: {s}\n", .{fail.text()});
         return err;
@@ -22,7 +22,7 @@ fn parseForTest(allocator: std.mem.Allocator, raw_text: []const u8, format: conf
 // Parses a config expecting it to fail, and hands back the message it failed with.
 //
 fn failureFor(allocator: std.mem.Allocator, raw_text: []const u8, format: config.ConfigFormat) ![]const u8 {
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     const parsed = config.parseConfig(allocator, raw_text, format, &fail);
     try testing.expectError(error.Failed, parsed);
     return fail.text();
@@ -33,7 +33,7 @@ test "formatForPath reads the format off the extension" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     try testing.expectEqual(config.ConfigFormat.yaml, try config.formatForPath(allocator, "/x/what-changed.yaml", &fail));
     try testing.expectEqual(config.ConfigFormat.yaml, try config.formatForPath(allocator, "/x/what-changed.yml", &fail));
     try testing.expectEqual(config.ConfigFormat.json, try config.formatForPath(allocator, "/x/what-changed.json", &fail));
@@ -44,7 +44,7 @@ test "formatForPath ignores the case of the extension" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     try testing.expectEqual(config.ConfigFormat.yaml, try config.formatForPath(allocator, "/x/WHAT-CHANGED.YAML", &fail));
     try testing.expectEqual(config.ConfigFormat.json, try config.formatForPath(allocator, "/x/What-Changed.Json", &fail));
 }
@@ -54,7 +54,7 @@ test "formatForPath refuses an unrecognised extension rather than guessing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     try testing.expectError(error.Failed, config.formatForPath(allocator, "/x/what-changed.toml", &fail));
     try testing.expectEqualStrings(
         "what-changed config \"/x/what-changed.toml\" has an unrecognised extension \".toml\". Use .yaml, .yml or .json.",
@@ -67,7 +67,7 @@ test "formatForPath refuses a file with no extension" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     try testing.expectError(error.Failed, config.formatForPath(allocator, "/x/what-changed", &fail));
 }
 
@@ -76,7 +76,7 @@ test "parseConfigText reads both formats into the same structure" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     const from_json = try config.parseConfigText(allocator, "{\"targets\": [{\"name\": \"a\"}]}", .json, &fail);
     const from_yaml = try config.parseConfigText(allocator, "targets:\n  - name: a\n", .yaml, &fail);
 
@@ -89,11 +89,11 @@ test "parseConfigText names the format that failed" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var yaml_fail = Failure.init(allocator);
+    var yaml_fail = Failure.init(allocator, .{});
     try testing.expectError(error.Failed, config.parseConfigText(allocator, "targets:\n  - a\n   b: c\n", .yaml, &yaml_fail));
     try testing.expect(std.mem.indexOf(u8, yaml_fail.text(), "not valid YAML") != null);
 
-    var json_fail = Failure.init(allocator);
+    var json_fail = Failure.init(allocator, .{});
     try testing.expectError(error.Failed, config.parseConfigText(allocator, "{ not json", .json, &json_fail));
     try testing.expect(std.mem.indexOf(u8, json_fail.text(), "not valid JSON") != null);
 }
@@ -378,7 +378,7 @@ test "validateWatchedPath accepts a relative path inside the project" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     try config.validateWatchedPath("src", "always", &fail);
     try config.validateWatchedPath("packages/a/src", "always", &fail);
     try config.validateWatchedPath("a..b", "always", &fail);
@@ -390,13 +390,13 @@ test "validateIgnoreExtension accepts a dotted extension" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     try config.validateIgnoreExtension(".md", &fail);
     try config.validateIgnoreExtension(".test.ts", &fail);
 }
 
 test "resolveConfigPath uses the named config, resolved against the working directory" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -404,14 +404,14 @@ test "resolveConfigPath uses the named config, resolved against the working dire
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     try testing.expectEqualStrings("/work/custom.yaml", try config.resolveConfigPath(io, allocator, "custom.yaml", "/work", &fail));
     try testing.expectEqualStrings("/other/custom.yaml", try config.resolveConfigPath(io, allocator, "/other/custom.yaml", "/work", &fail));
     try testing.expectEqualStrings("/work/nested/custom.yaml", try config.resolveConfigPath(io, allocator, "nested/custom.yaml", "/work", &fail));
 }
 
 test "findConfig names every name it looked for when there is none" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -419,10 +419,10 @@ test "findConfig names every name it looked for when there is none" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     try testing.expectError(error.Failed, config.findConfig(io, allocator, temporary.path, &fail));
     try testing.expect(std.mem.indexOf(u8, fail.text(), "what-changed.yaml") != null);
     try testing.expect(std.mem.indexOf(u8, fail.text(), "what-changed.yml") != null);
@@ -430,7 +430,7 @@ test "findConfig names every name it looked for when there is none" {
 }
 
 test "findConfig prefers the names in the order they are listed" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -438,11 +438,11 @@ test "findConfig prefers the names in the order they are listed" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     try temporary.write("what-changed.json", "{}");
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     const found_json = try config.findConfig(io, allocator, temporary.path, &fail);
     try testing.expect(std.mem.endsWith(u8, found_json, "what-changed.json"));
 
@@ -452,7 +452,7 @@ test "findConfig prefers the names in the order they are listed" {
 }
 
 test "loadConfig reads a config off disk" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -460,18 +460,18 @@ test "loadConfig reads a config off disk" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     try temporary.write("what-changed.yaml", "targets:\n  - name: unit\n    paths:\n      - src\n");
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     const parsed = try config.loadConfig(io, allocator, try temporary.join(allocator, "what-changed.yaml"), &fail);
     try testing.expectEqualStrings("unit", parsed.targets[0].name);
 }
 
 test "loadConfig names the path when the file is not there" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -479,10 +479,10 @@ test "loadConfig names the path when the file is not there" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     try testing.expectError(error.Failed, config.loadConfig(io, allocator, try temporary.join(allocator, "missing.yaml"), &fail));
     try testing.expect(std.mem.startsWith(u8, fail.text(), "Failed to read the what-changed config at \""));
     try testing.expect(std.mem.indexOf(u8, fail.text(), "missing.yaml") != null);
@@ -498,10 +498,10 @@ test "parseTarget reads one target on its own" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const raw = try json.parse(allocator, "{\"name\": \"unit\", \"paths\": [\"src\"], \"platforms\": [\"linux\"]}");
+    const raw = try json.parse(allocator, "{\"name\": \"unit\", \"paths\": [\"src\"], \"platforms\": [\"linux\"]}", .{});
 
     var seen_names: std.StringArrayHashMapUnmanaged(void) = .empty;
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     const target = try config.parseTarget(allocator, raw, &seen_names, &fail);
 
     try testing.expectEqualStrings("unit", target.name);
@@ -514,10 +514,10 @@ test "parseTarget records the name it saw, so the next duplicate is caught" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const raw = try json.parse(allocator, "{\"name\": \"unit\", \"paths\": [\"src\"]}");
+    const raw = try json.parse(allocator, "{\"name\": \"unit\", \"paths\": [\"src\"]}", .{});
 
     var seen_names: std.StringArrayHashMapUnmanaged(void) = .empty;
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
 
     _ = try config.parseTarget(allocator, raw, &seen_names, &fail);
     try testing.expect(seen_names.contains("unit"));
@@ -535,10 +535,10 @@ test "parseTarget defaults an absent platforms list to every platform" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const raw = try json.parse(allocator, "{\"name\": \"unit\", \"paths\": [\"src\"]}");
+    const raw = try json.parse(allocator, "{\"name\": \"unit\", \"paths\": [\"src\"]}", .{});
 
     var seen_names: std.StringArrayHashMapUnmanaged(void) = .empty;
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     const target = try config.parseTarget(allocator, raw, &seen_names, &fail);
 
     try testing.expectEqual(@as(usize, 0), target.platforms.len);
@@ -550,7 +550,7 @@ test "parseTarget refuses anything that is not an object" {
     const allocator = arena.allocator();
 
     var seen_names: std.StringArrayHashMapUnmanaged(void) = .empty;
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
 
     try testing.expectError(error.Failed, config.parseTarget(allocator, value.str("unit"), &seen_names, &fail));
     try testing.expectEqualStrings("what-changed config target must be an object, got \"unit\"", fail.text());

@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const wc = @import("what-changed");
 
 const commander = wc.commander;
@@ -36,9 +45,11 @@ pub fn baselineSetCommand(context: *const Context, options: ReportOptions, targe
 // Forgets the baseline, so the next report treats every file as new.
 //
 pub fn baselineResetCommand(context: *const Context, options: ReportOptions) wc.failure.Error!u8 {
+    const log = context.fail.log;
     const baseline_path = try resolveBaselinePath(context, options);
 
-    wc.baseline_store.baselineReset(context.io, context.allocator, baseline_path) catch |err| {
+    wc.baseline_store.baselineReset(context.io, context.allocator, baseline_path, log) catch |err| {
+        if (an) annotate(log, "baselineResetCommand-will-not-write", "", .{});
         return context.fail.set("Failed to reset the baseline at \"{s}\": {s}", .{ baseline_path, wc.files.describeError(err) });
     };
 
@@ -50,19 +61,22 @@ pub fn baselineResetCommand(context: *const Context, options: ReportOptions) wc.
 // Says where the baseline is kept and how much is in it.
 //
 pub fn baselineShowCommand(context: *const Context, options: ReportOptions) wc.failure.Error!u8 {
+    const log = context.fail.log;
     const allocator = context.allocator;
 
     const baseline_path = try resolveBaselinePath(context, options);
-    const loaded = try wc.baseline_store.loadBaseline(context.io, allocator, baseline_path);
+    const loaded = try wc.baseline_store.loadBaseline(context.io, allocator, baseline_path, log);
     var baseline = loaded.baseline;
     const format = try wc.output.parseOutputFormat(options.output, context.fail);
 
     const target_names = try allocator.dupe([]const u8, baseline.targets.keys());
-    std.mem.sort([]const u8, target_names, {}, wc.file_hashes.lessThanPath);
+    std.mem.sort([]const u8, target_names, wc.file_hashes.Ordering{ .log = log }, wc.file_hashes.lessThanPath);
 
     if (format != .text) {
+        if (an) annotate(log, "baselineShowCommand-machine-readable", "", .{});
         var targets = wc.value.newArray(allocator);
         for (target_names) |name| {
+            if (an) annotate(log, "baselineShowCommand-targets-iteration", "", .{});
             var entry: wc.value.Object = .empty;
             try entry.put(allocator, "name", wc.value.str(name));
             try entry.put(allocator, "fileCount", wc.value.int(@intCast(baseline.targets.get(name).?.count())));
@@ -85,11 +99,13 @@ pub fn baselineShowCommand(context: *const Context, options: ReportOptions) wc.f
     // written, which is the one thing this command exists to tell apart.
     //
     if (describeUnusable(loaded.source)) |problem| {
+        if (an) annotate(log, "baselineShowCommand-unusable", "", .{});
         context.out.line("{s} Everything counts as changed until it is fixed or reset.", .{problem});
         return 0;
     }
 
     if (target_names.len == 0) {
+        if (an) annotate(log, "baselineShowCommand-nothing-captured", "", .{});
         context.out.line("No target has been captured yet, so everything counts as changed.", .{});
         return 0;
     }
@@ -100,6 +116,7 @@ pub fn baselineShowCommand(context: *const Context, options: ReportOptions) wc.f
     //
     context.out.line("{d} target(s) captured:", .{target_names.len});
     for (target_names) |name| {
+        if (an) annotate(log, "baselineShowCommand-captured-iteration", "", .{});
         context.out.line("  {s}: {d} file(s)", .{ name, baseline.targets.get(name).?.count() });
     }
     return 0;
@@ -125,7 +142,7 @@ fn describeUnusable(source: wc.cache_store.JsonObjectFile) ?[]const u8 {
 // Builds the `baseline` command.
 //
 pub fn baselineCommand(context: *const Context) *Command {
-    const cmd = Command.init(context.allocator, "baseline")
+    const cmd = Command.init(context.allocator, "baseline", context.fail.log)
         .description("Manage the recorded baseline that changes are measured against.");
 
     _ = cmd.command("capture")

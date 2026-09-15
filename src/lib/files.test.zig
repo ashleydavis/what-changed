@@ -66,16 +66,16 @@ test "each TestIo is its own implementation" {
     // The point of a test making its own: two of them are two separate implementations, so nothing
     // one test does to its `Io` can be seen by another.
     //
-    var first = files.TestIo.init();
+    var first = files.TestIo.init(.{});
     defer first.deinit();
-    var second = files.TestIo.init();
+    var second = files.TestIo.init(.{});
     defer second.deinit();
 
     try testing.expect(first.io().userdata != second.io().userdata);
 }
 
 test "readFile and writeFile round trip a file" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -83,7 +83,7 @@ test "readFile and writeFile round trip a file" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     const path = try temporary.join(allocator, "nested/file.txt");
@@ -93,7 +93,7 @@ test "readFile and writeFile round trip a file" {
 }
 
 test "fileExists answers for a file that is there and one that is not" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -101,16 +101,16 @@ test "fileExists answers for a file that is there and one that is not" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     try temporary.write("here.txt", "x");
-    try testing.expect(files.fileExists(io, try temporary.join(allocator, "here.txt")));
-    try testing.expect(!files.fileExists(io, try temporary.join(allocator, "gone.txt")));
+    try testing.expect(files.fileExists(io, try temporary.join(allocator, "here.txt"), .{}));
+    try testing.expect(!files.fileExists(io, try temporary.join(allocator, "gone.txt"), .{}));
 }
 
 test "readFile reports a missing file rather than returning nothing" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -118,14 +118,14 @@ test "readFile reports a missing file rather than returning nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     try testing.expectError(error.FileNotFound, files.readFile(io, allocator, try temporary.join(allocator, "gone.txt")));
 }
 
 test "makeDirPath creates every directory in the path" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -133,7 +133,7 @@ test "makeDirPath creates every directory in the path" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     const deep = try temporary.join(allocator, "a/b/c");
@@ -145,7 +145,7 @@ test "makeDirPath creates every directory in the path" {
 }
 
 test "renameFile moves a file over whatever was there" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -153,7 +153,7 @@ test "renameFile moves a file over whatever was there" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     try temporary.write("from.txt", "new");
@@ -165,7 +165,7 @@ test "renameFile moves a file over whatever was there" {
 }
 
 test "removeFile deletes a file and reports a missing one" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -173,7 +173,7 @@ test "removeFile deletes a file and reports a missing one" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     try temporary.write("gone.txt", "x");
@@ -188,7 +188,7 @@ test "removeFile deletes a file and reports a missing one" {
 }
 
 test "createFileExclusive lets exactly one caller win" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -196,7 +196,7 @@ test "createFileExclusive lets exactly one caller win" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
     const lock_path = try temporary.join(allocator, "thing.lock");
 
@@ -213,7 +213,7 @@ test "createFileExclusive lets exactly one caller win" {
 }
 
 test "statFile reads the size and a plausible modification time" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -221,7 +221,7 @@ test "statFile reads the size and a plausible modification time" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     try temporary.write("sized.txt", "12345");
@@ -236,7 +236,7 @@ test "statFile reads the size and a plausible modification time" {
 }
 
 test "openFile and fileReader stream a file's bytes" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -244,7 +244,7 @@ test "openFile and fileReader stream a file's bytes" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
     try temporary.write("streamed.txt", "abcdefghij");
 
@@ -265,20 +265,20 @@ test "openFile and fileReader stream a file's bytes" {
 }
 
 test "nowMs reads a real wall-clock time" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
 
     try testing.expect(files.nowMs(test_io.io()) > 1_600_000_000_000.0);
 }
 
 test "TemporaryDir gives each caller its own directory" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
-    var first = try files.TemporaryDir.create(io);
+    var first = try files.TemporaryDir.create(io, .{});
     defer first.destroy();
-    var second = try files.TemporaryDir.create(io);
+    var second = try files.TemporaryDir.create(io, .{});
     defer second.destroy();
 
     try testing.expect(!std.mem.eql(u8, first.path, second.path));

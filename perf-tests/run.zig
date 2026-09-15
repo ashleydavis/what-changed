@@ -141,7 +141,7 @@ pub fn buildFileTree(io: std.Io, allocator: std.mem.Allocator, root_dir: []const
 //
 //
 pub fn benchmarkSize(io: std.Io, allocator: std.mem.Allocator, file_count: usize) !bool {
-    var temporary = try wc.files.TemporaryDir.create(io);
+    var temporary = try wc.files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     var within_budget = true;
@@ -150,11 +150,11 @@ pub fn benchmarkSize(io: std.Io, allocator: std.mem.Allocator, file_count: usize
 
     var cold_cache: wc.file_hash.FileHashCache = .empty;
     var at = start(io);
-    _ = try wc.file_hash.hashFiles(io, allocator, temporary.path, relative_paths, &cold_cache);
+    _ = try wc.file_hash.hashFiles(io, allocator, temporary.path, relative_paths, &cold_cache, .{});
     try record(allocator, "hash (cold, reads every file)", file_count, elapsedMs(io, at));
 
     at = start(io);
-    var hashes = (try wc.file_hash.hashFiles(io, allocator, temporary.path, relative_paths, &cold_cache)).hashes;
+    var hashes = (try wc.file_hash.hashFiles(io, allocator, temporary.path, relative_paths, &cold_cache, .{})).hashes;
     const warm_ms = elapsedMs(io, at);
     try record(allocator, "hash (warm, stat only)", file_count, warm_ms);
 
@@ -167,14 +167,14 @@ pub fn benchmarkSize(io: std.Io, allocator: std.mem.Allocator, file_count: usize
     var baseline = try hashes.clone(allocator);
 
     at = start(io);
-    std.mem.doNotOptimizeAway(try wc.changed_files.diffFileHashes(allocator, &hashes, &baseline, &.{}));
+    std.mem.doNotOptimizeAway(try wc.changed_files.diffFileHashes(allocator, &hashes, &baseline, &.{}, .{}));
     try record(allocator, "diff files (nothing changed)", file_count, elapsedMs(io, at));
 
     var one_changed = try hashes.clone(allocator);
     try one_changed.put(allocator, relative_paths[0], "changed");
 
     at = start(io);
-    std.mem.doNotOptimizeAway(try wc.changed_files.diffFileHashes(allocator, &one_changed, &baseline, &.{}));
+    std.mem.doNotOptimizeAway(try wc.changed_files.diffFileHashes(allocator, &one_changed, &baseline, &.{}, .{}));
     try record(allocator, "diff files (one changed)", file_count, elapsedMs(io, at));
 
     return within_budget;

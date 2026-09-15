@@ -30,20 +30,20 @@ fn recordAction(invocation: *commander.Invocation) anyerror!void {
 // Builds a program shaped like the tool's own, for the tests below.
 //
 fn buildTestProgram(allocator: std.mem.Allocator, recorder: *Recorder) !*commander.Command {
-    const root = commander.Command.init(allocator, "what-changed");
+    const root = commander.Command.init(allocator, "what-changed", .{});
     _ = root.description("Reports which files have changed.")
         .helpOption("--help", "Print this text.")
         .version("dev", "-v, --version", "Print the version.")
         .enablePositionalOptions();
 
-    const summary = commander.Command.init(allocator, "summary");
+    const summary = commander.Command.init(allocator, "summary", .{});
     _ = summary.description("Show the changed files grouped under the targets they fall under.")
         .option("--config <path>", "The config file to read.", null)
         .option("--output <format>", "How to render the result: text, json or yaml.", "text")
         .action(recorder, recordAction);
     root.addCommand(summary);
 
-    const baseline = commander.Command.init(allocator, "baseline");
+    const baseline = commander.Command.init(allocator, "baseline", .{});
     _ = baseline.description("Manage the recorded baseline.");
     _ = baseline.command("capture")
         .alias("update")
@@ -54,7 +54,7 @@ fn buildTestProgram(allocator: std.mem.Allocator, recorder: *Recorder) !*command
         .action(recorder, recordAction);
     root.addCommand(baseline);
 
-    const targets = commander.Command.init(allocator, "targets");
+    const targets = commander.Command.init(allocator, "targets", .{});
     _ = targets.description("Print the affected target names.")
         .option("--output <format>", "How to render the result.", "text")
         .action(recorder, recordAction);
@@ -102,17 +102,17 @@ test "isVariadic reads the ellipsis in an argument spec" {
 }
 
 test "namedBy matches any spelling in a flag list" {
-    try testing.expect(commander.namedBy("-v, --version", "-v"));
-    try testing.expect(commander.namedBy("-v, --version", "--version"));
-    try testing.expect(commander.namedBy("--help", "--help"));
-    try testing.expect(!commander.namedBy("--help", "-h"));
+    try testing.expect(commander.namedBy("-v, --version", "-v", .{}));
+    try testing.expect(commander.namedBy("-v, --version", "--version", .{}));
+    try testing.expect(commander.namedBy("--help", "--help", .{}));
+    try testing.expect(!commander.namedBy("--help", "-h", .{}));
 }
 
 test "matches accepts a command's name and every alias" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const command = commander.Command.init(arena.allocator(), "capture");
+    const command = commander.Command.init(arena.allocator(), "capture", .{});
     _ = command.alias("update").alias("set");
 
     try testing.expect(command.matches("capture"));
@@ -125,7 +125,7 @@ test "findOption finds an option by any of its spellings" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const command = commander.Command.init(arena.allocator(), "summary");
+    const command = commander.Command.init(arena.allocator(), "summary", .{});
     _ = command.option("--config <path>", "The config file.", null);
 
     try testing.expect(command.findOption("--config") != null);
@@ -136,7 +136,7 @@ test "command adds a subcommand and returns the child to chain onto" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const parent = commander.Command.init(arena.allocator(), "baseline");
+    const parent = commander.Command.init(arena.allocator(), "baseline", .{});
     const child = parent.command("capture");
 
     try testing.expectEqual(@as(usize, 1), parent.subcommands.items.len);
@@ -408,7 +408,7 @@ test "renderHelp names a subcommand's aliases and what it accepts" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const baseline = commander.Command.init(allocator, "baseline");
+    const baseline = commander.Command.init(allocator, "baseline", .{});
     _ = baseline.command("capture")
         .alias("update")
         .alias("set")
@@ -429,7 +429,7 @@ test "renderHelp shows an option's default the way commander does" {
     // A short description, so the default is not pushed onto the next line by the wrapping. That
     // the long form wraps is checked separately; this is about the default being shown at all.
     //
-    const command = commander.Command.init(allocator, "summary");
+    const command = commander.Command.init(allocator, "summary", .{});
     _ = command.option("--output <format>", "How to render.", "text");
 
     const help = try commander.renderHelp(allocator, command);
@@ -441,7 +441,7 @@ test "renderHelp puts the extra text after everything else" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const command = commander.Command.init(allocator, "capture");
+    const command = commander.Command.init(allocator, "capture", .{});
     _ = command.description("Record the baseline.").addHelpText("after", "\nCapture one target only after it has passed.");
 
     const help = try commander.renderHelp(allocator, command);
@@ -453,7 +453,7 @@ test "renderHelp wraps a long description rather than running past the width" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const command = commander.Command.init(allocator, "targets");
+    const command = commander.Command.init(allocator, "targets", .{});
     _ = command.description("Print the names of the targets affected by the current changes, one per line. Targets that cannot run on this platform are never named.");
 
     const help = try commander.renderHelp(allocator, command);
@@ -468,10 +468,10 @@ test "a usage line only claims what the command actually takes" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const bare = commander.Command.init(allocator, "bare");
+    const bare = commander.Command.init(allocator, "bare", .{});
     try testing.expect(std.mem.startsWith(u8, try commander.renderHelp(allocator, bare), "Usage: bare\n"));
 
-    const with_options = commander.Command.init(allocator, "opts");
+    const with_options = commander.Command.init(allocator, "opts", .{});
     _ = with_options.option("--config <path>", "The config file.", null);
     try testing.expect(std.mem.startsWith(u8, try commander.renderHelp(allocator, with_options), "Usage: opts [options]\n"));
 }

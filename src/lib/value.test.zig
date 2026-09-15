@@ -52,15 +52,15 @@ test "describe renders values compactly, for dropping into a message" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try testing.expectEqualStrings("undefined", try value.describe(allocator, null));
-    try testing.expectEqualStrings("null", try value.describe(allocator, .null));
-    try testing.expectEqualStrings("\"alpha\"", try value.describe(allocator, value.str("alpha")));
-    try testing.expectEqualStrings("7", try value.describe(allocator, value.int(7)));
-    try testing.expectEqualStrings("true", try value.describe(allocator, value.boolean(true)));
-    try testing.expectEqualStrings("[]", try value.describe(allocator, .{ .array = value.newArray(allocator) }));
+    try testing.expectEqualStrings("undefined", try value.describe(allocator, null, .{}));
+    try testing.expectEqualStrings("null", try value.describe(allocator, .null, .{}));
+    try testing.expectEqualStrings("\"alpha\"", try value.describe(allocator, value.str("alpha"), .{}));
+    try testing.expectEqualStrings("7", try value.describe(allocator, value.int(7), .{}));
+    try testing.expectEqualStrings("true", try value.describe(allocator, value.boolean(true), .{}));
+    try testing.expectEqualStrings("[]", try value.describe(allocator, .{ .array = value.newArray(allocator) }, .{}));
 
     var array = value.newArray(allocator);
     try array.append(value.int(1));
     try array.append(value.str("two"));
-    try testing.expectEqualStrings("[1,\"two\"]", try value.describe(allocator, .{ .array = array }));
+    try testing.expectEqualStrings("[1,\"two\"]", try value.describe(allocator, .{ .array = array }, .{}));
 }

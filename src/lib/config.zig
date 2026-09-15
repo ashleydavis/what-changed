@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const value = @import("value.zig");
 const json = @import("json.zig");
 const yaml = @import("yaml.zig");
@@ -111,9 +120,11 @@ pub fn formatForPath(allocator: std.mem.Allocator, config_path: []const u8, fail
     const extension = try std.ascii.allocLowerString(allocator, std.fs.path.extension(config_path));
 
     if (std.mem.eql(u8, extension, ".yaml") or std.mem.eql(u8, extension, ".yml")) {
+        if (an) annotate(fail.log, "formatForPath-yaml", "", .{});
         return .yaml;
     }
     if (std.mem.eql(u8, extension, ".json")) {
+        if (an) annotate(fail.log, "formatForPath-json", "", .{});
         return .json;
     }
 
@@ -143,8 +154,9 @@ pub fn parseConfig(allocator: std.mem.Allocator, raw_text: []const u8, format: C
     const parsed = try parseConfigText(allocator, raw_text, format, fail);
 
     if (!value.isPlainObject(parsed)) {
+        if (an) annotate(fail.log, "parseConfig-not-an-object", "", .{});
         return fail.set("what-changed config must be a {s} object, got {s}", .{
-            format.name(), try value.describe(allocator, parsed),
+            format.name(), try value.describe(allocator, parsed, fail.log),
         });
     }
 
@@ -153,24 +165,30 @@ pub fn parseConfig(allocator: std.mem.Allocator, raw_text: []const u8, format: C
 
     const always = try readStringArrayField(allocator, parsed, "always", fail);
     for (always) |watched_path| {
+        if (an) annotate(fail.log, "parseConfig-always-iteration", "", .{});
         try validateWatchedPath(watched_path, "always", fail);
     }
 
     const ignore = try readStringArrayField(allocator, parsed, "ignore", fail);
     for (ignore) |extension| {
+        if (an) annotate(fail.log, "parseConfig-ignore-iteration", "", .{});
         try validateIgnoreExtension(extension, fail);
     }
 
     const raw_targets = value.get(parsed, "targets");
     const targets_array = switch (raw_targets orelse Value.null) {
         .array => |array| array,
-        else => return fail.set("what-changed config field \"targets\" must be a non-empty array, got {s}", .{
-            try value.describe(allocator, raw_targets),
-        }),
+        else => {
+            if (an) annotate(fail.log, "parseConfig-targets-is-not-an-array", "", .{});
+            return fail.set("what-changed config field \"targets\" must be a non-empty array, got {s}", .{
+                try value.describe(allocator, raw_targets, fail.log),
+            });
+        },
     };
     if (targets_array.items.len == 0) {
+        if (an) annotate(fail.log, "parseConfig-targets-is-empty", "", .{});
         return fail.set("what-changed config field \"targets\" must be a non-empty array, got {s}", .{
-            try value.describe(allocator, raw_targets),
+            try value.describe(allocator, raw_targets, fail.log),
         });
     }
 
@@ -181,6 +199,7 @@ pub fn parseConfig(allocator: std.mem.Allocator, raw_text: []const u8, format: C
     var seen_names: std.StringArrayHashMapUnmanaged(void) = .empty;
     var targets: std.ArrayList(TargetConfig) = .empty;
     for (targets_array.items) |raw_target| {
+        if (an) annotate(fail.log, "parseConfig-targets-iteration", "", .{});
         try targets.append(allocator, try parseTarget(allocator, raw_target, &seen_names, fail));
     }
 
@@ -197,13 +216,24 @@ pub fn parseConfig(allocator: std.mem.Allocator, raw_text: []const u8, format: C
 // Reads a field that must be a non-empty string, or is absent and takes a default.
 //
 fn readPathField(allocator: std.mem.Allocator, parsed: Value, field: []const u8, default: []const u8, fail: *Failure) failure.Error![]const u8 {
-    const raw = value.get(parsed, field) orelse return default;
+    const raw = value.get(parsed, field) orelse {
+        if (an) annotate(fail.log, "readPathField-absent", "", .{});
+        return default;
+    };
     switch (raw) {
-        .string => |text| if (text.len > 0) return text,
-        else => {},
+        .string => |text| {
+            if (an) annotate(fail.log, "readPathField-a-string", "", .{});
+            if (text.len > 0) {
+                if (an) annotate(fail.log, "readPathField-not-empty", "", .{});
+                return text;
+            }
+        },
+        else => {
+            if (an) annotate(fail.log, "readPathField-not-a-string", "", .{});
+        },
     }
     return fail.set("what-changed config field \"{s}\" must be a non-empty string, got {s}", .{
-        field, try value.describe(allocator, raw),
+        field, try value.describe(allocator, raw, fail.log),
     });
 }
 
@@ -214,13 +244,19 @@ fn readPathField(allocator: std.mem.Allocator, parsed: Value, field: []const u8,
 // caller says so itself with a message naming that field.
 //
 fn readStringArrayField(allocator: std.mem.Allocator, parsed: Value, field: []const u8, fail: *Failure) failure.Error![][]const u8 {
-    const raw = value.get(parsed, field) orelse return &.{};
+    const raw = value.get(parsed, field) orelse {
+        if (an) annotate(fail.log, "readStringArrayField-absent", "", .{});
+        return &.{};
+    };
 
     const array = switch (raw) {
         .array => |array| array,
-        else => return fail.set("what-changed config field \"{s}\" must be an array, got {s}", .{
-            field, try value.describe(allocator, raw),
-        }),
+        else => {
+            if (an) annotate(fail.log, "readStringArrayField-not-an-array", "", .{});
+            return fail.set("what-changed config field \"{s}\" must be an array, got {s}", .{
+                field, try value.describe(allocator, raw, fail.log),
+            });
+        },
     };
 
     //
@@ -229,9 +265,10 @@ fn readStringArrayField(allocator: std.mem.Allocator, parsed: Value, field: []co
     //
     var entries: std.ArrayList([]const u8) = .empty;
     for (array.items) |item| {
+        if (an) annotate(fail.log, "readStringArrayField-entries-iteration", "", .{});
         try entries.append(allocator, switch (item) {
             .string => |text| text,
-            else => try nonStringPlaceholder(allocator, item),
+            else => try nonStringPlaceholder(allocator, item, fail.log),
         });
     }
     return entries.toOwnedSlice(allocator);
@@ -243,15 +280,18 @@ fn readStringArrayField(allocator: std.mem.Allocator, parsed: Value, field: []co
 // Prefixed with a NUL, which no real path or extension can hold, so the checks downstream can tell
 // a placeholder from a genuine value and report the original rather than the rendering.
 //
-fn nonStringPlaceholder(allocator: std.mem.Allocator, item: Value) std.mem.Allocator.Error![]const u8 {
-    return std.mem.concat(allocator, u8, &.{ "\x00", try value.describe(allocator, item) });
+fn nonStringPlaceholder(allocator: std.mem.Allocator, item: Value, log: Log) std.mem.Allocator.Error![]const u8 {
+    return std.mem.concat(allocator, u8, &.{ "\x00", try value.describe(allocator, item, log) });
 }
 
 //
 // The rendering of a value that was not a string, or null when the entry really is a string.
 //
-fn placeholderText(entry: []const u8) ?[]const u8 {
-    if (entry.len > 0 and entry[0] == 0) return entry[1..];
+fn placeholderText(entry: []const u8, log: Log) ?[]const u8 {
+    if (entry.len > 0 and entry[0] == 0) {
+        if (an) annotate(log, "placeholderText-a-placeholder", "", .{});
+        return entry[1..];
+    }
     return null;
 }
 
@@ -260,8 +300,9 @@ fn placeholderText(entry: []const u8) ?[]const u8 {
 //
 pub fn parseTarget(allocator: std.mem.Allocator, raw_target: Value, seen_names: *std.StringArrayHashMapUnmanaged(void), fail: *Failure) failure.Error!TargetConfig {
     if (!value.isPlainObject(raw_target)) {
+        if (an) annotate(fail.log, "parseTarget-not-an-object", "", .{});
         return fail.set("what-changed config target must be an object, got {s}", .{
-            try value.describe(allocator, raw_target),
+            try value.describe(allocator, raw_target, fail.log),
         });
     }
 
@@ -271,11 +312,13 @@ pub fn parseTarget(allocator: std.mem.Allocator, raw_target: Value, seen_names: 
         else => "",
     };
     if (name.len == 0) {
+        if (an) annotate(fail.log, "parseTarget-name-is-empty", "", .{});
         return fail.set("what-changed config target field \"name\" must be a non-empty string, got {s}", .{
-            try value.describe(allocator, raw_name),
+            try value.describe(allocator, raw_name, fail.log),
         });
     }
     if (seen_names.contains(name)) {
+        if (an) annotate(fail.log, "parseTarget-name-is-a-duplicate", "", .{});
         return fail.set("what-changed config has a duplicate target name \"{s}\"", .{name});
     }
     try seen_names.put(allocator, name, {});
@@ -286,14 +329,19 @@ pub fn parseTarget(allocator: std.mem.Allocator, raw_target: Value, seen_names: 
         else => false,
     };
     if (!is_array) {
+        if (an) annotate(fail.log, "parseTarget-paths-is-unusable", "", .{});
         return fail.set("what-changed config target \"{s}\" field \"paths\" must be a non-empty array, got {s}", .{
-            name, try value.describe(allocator, raw_paths),
+            name, try value.describe(allocator, raw_paths, fail.log),
         });
     }
 
     const paths = try readStringArrayField(allocator, raw_target, "paths", fail);
+    // The check above refused a `paths` that was absent, not an array, or an empty one, so what
+    // comes back here always holds something.
+    std.debug.assert(paths.len > 0);
     const field_description = try std.fmt.allocPrint(allocator, "target \"{s}\" paths", .{name});
     for (paths) |watched_path| {
+        if (an) annotate(fail.log, "parseTarget-paths-iteration", "", .{});
         try validateWatchedPath(watched_path, field_description, fail);
     }
 
@@ -302,19 +350,28 @@ pub fn parseTarget(allocator: std.mem.Allocator, raw_target: Value, seen_names: 
     // that says nothing about platforms has always meant.
     //
     if (value.get(raw_target, "platforms")) |raw_platforms| {
+        if (an) annotate(fail.log, "parseTarget-has-platforms", "", .{});
         switch (raw_platforms) {
-            .array => {},
-            else => return fail.set("what-changed config target \"{s}\" field \"platforms\" must be an array, got {s}", .{
-                name, try value.describe(allocator, raw_platforms),
-            }),
+            .array => {
+                if (an) annotate(fail.log, "parseTarget-platforms-is-an-array", "", .{});
+            },
+            else => {
+                if (an) annotate(fail.log, "parseTarget-platforms-is-not-an-array", "", .{});
+                return fail.set("what-changed config target \"{s}\" field \"platforms\" must be an array, got {s}", .{
+                    name, try value.describe(allocator, raw_platforms, fail.log),
+                });
+            },
         }
     }
     const platforms = try readStringArrayField(allocator, raw_target, "platforms", fail);
     for (platforms) |platform| {
-        if (placeholderText(platform)) |written| {
+        if (an) annotate(fail.log, "parseTarget-platforms-iteration", "", .{});
+        if (placeholderText(platform, fail.log)) |written| {
+            if (an) annotate(fail.log, "parseTarget-platform-is-not-a-string", "", .{});
             return fail.set("what-changed config target \"{s}\" field \"platforms\" must hold non-empty strings, got {s}", .{ name, written });
         }
         if (platform.len == 0) {
+            if (an) annotate(fail.log, "parseTarget-platform-is-empty", "", .{});
             return fail.set("what-changed config target \"{s}\" field \"platforms\" must hold non-empty strings, got \"\"", .{name});
         }
     }
@@ -331,19 +388,24 @@ pub fn parseTarget(allocator: std.mem.Allocator, raw_target: Value, seen_names: 
 // climbs out with ".." would let the tool watch, and later report on, files outside the repository.
 //
 pub fn validateWatchedPath(watched_path: []const u8, field_description: []const u8, fail: *Failure) failure.Error!void {
-    if (placeholderText(watched_path)) |written| {
+    if (placeholderText(watched_path, fail.log)) |written| {
+        if (an) annotate(fail.log, "validateWatchedPath-not-a-string", "", .{});
         return fail.set("what-changed config field \"{s}\" must hold non-empty strings, got {s}", .{ field_description, written });
     }
     if (watched_path.len == 0) {
+        if (an) annotate(fail.log, "validateWatchedPath-empty", "", .{});
         return fail.set("what-changed config field \"{s}\" must hold non-empty strings, got \"\"", .{field_description});
     }
     if (files.isAbsolutePath(watched_path)) {
+        if (an) annotate(fail.log, "validateWatchedPath-absolute", "", .{});
         return fail.set("what-changed config field \"{s}\" must hold relative paths, got \"{s}\"", .{ field_description, watched_path });
     }
 
     var segments = std.mem.splitScalar(u8, watched_path, '/');
     while (segments.next()) |segment| {
+        if (an) annotate(fail.log, "validateWatchedPath-segments-iteration", "", .{});
         if (std.mem.eql(u8, segment, "..")) {
+            if (an) annotate(fail.log, "validateWatchedPath-climbs-out", "", .{});
             return fail.set("what-changed config field \"{s}\" must not contain a \"..\" segment, got \"{s}\"", .{ field_description, watched_path });
         }
     }
@@ -355,19 +417,24 @@ pub fn validateWatchedPath(watched_path: []const u8, field_description: []const 
 // would quietly stop a suite from running.
 //
 pub fn validateIgnoreExtension(extension: []const u8, fail: *Failure) failure.Error!void {
-    if (placeholderText(extension)) |written| {
+    if (placeholderText(extension, fail.log)) |written| {
+        if (an) annotate(fail.log, "validateIgnoreExtension-not-a-string", "", .{});
         return fail.set("what-changed config field \"ignore\" must hold non-empty strings, got {s}", .{written});
     }
     if (extension.len == 0) {
+        if (an) annotate(fail.log, "validateIgnoreExtension-empty", "", .{});
         return fail.set("what-changed config field \"ignore\" must hold non-empty strings, got \"\"", .{});
     }
     if (extension[0] != '.') {
+        if (an) annotate(fail.log, "validateIgnoreExtension-no-dot", "", .{});
         return fail.set("what-changed config field \"ignore\" entries must start with a dot, got \"{s}\"", .{extension});
     }
     if (extension.len == 1) {
+        if (an) annotate(fail.log, "validateIgnoreExtension-only-a-dot", "", .{});
         return fail.set("what-changed config field \"ignore\" entries must have something after the dot, got \"{s}\"", .{extension});
     }
     if (std.mem.indexOfScalar(u8, extension, '/') != null) {
+        if (an) annotate(fail.log, "validateIgnoreExtension-a-path", "", .{});
         return fail.set("what-changed config field \"ignore\" holds extensions, not paths, got \"{s}\"", .{extension});
     }
 }
@@ -379,6 +446,7 @@ pub fn loadConfig(io: std.Io, allocator: std.mem.Allocator, config_path: []const
     const format = try formatForPath(allocator, config_path, fail);
 
     const raw_text = files.readFile(io, allocator, config_path) catch |err| {
+        if (an) annotate(fail.log, "loadConfig-cannot-be-read", "", .{});
         return fail.set("Failed to read the what-changed config at \"{s}\": {s}", .{
             config_path, try files.describeOperation(allocator, err, "open", config_path),
         });
@@ -393,6 +461,7 @@ pub fn loadConfig(io: std.Io, allocator: std.mem.Allocator, config_path: []const
 //
 pub fn resolveConfigPath(io: std.Io, allocator: std.mem.Allocator, named_config: ?[]const u8, cwd: []const u8, fail: *Failure) failure.Error![]const u8 {
     if (named_config) |named| {
+        if (an) annotate(fail.log, "resolveConfigPath-named", "", .{});
         return files.resolvePath(allocator, cwd, named);
     }
     return findConfig(io, allocator, cwd, fail);
@@ -406,8 +475,10 @@ pub fn resolveConfigPath(io: std.Io, allocator: std.mem.Allocator, named_config:
 //
 pub fn findConfig(io: std.Io, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![]const u8 {
     for (DEFAULT_CONFIG_NAMES) |name| {
+        if (an) annotate(fail.log, "findConfig-names-iteration", "", .{});
         const candidate = try std.fs.path.join(allocator, &.{ root_dir, name });
-        if (files.fileExists(io, candidate)) {
+        if (files.fileExists(io, candidate, fail.log)) {
+            if (an) annotate(fail.log, "findConfig-found", "", .{});
             return candidate;
         }
     }

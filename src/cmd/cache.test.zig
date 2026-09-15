@@ -3,12 +3,12 @@ const wc = @import("what-changed");
 const cache = @import("cache.zig");
 const commander = wc.commander;
 const testing = std.testing;
-const harness = @import("harness.zig");
+const harness = @import("test/harness.zig");
 
 const ONE_TARGET_CONFIG = "targets:\n  - name: unit\n    paths:\n      - src\n";
 
 test "resolveCacheDir resolves the config's path against the config's directory" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.write("what-changed.yaml", "cacheDir: tmp/hashes\ntargets:\n  - name: unit\n    paths:\n      - src\n");
@@ -20,7 +20,7 @@ test "resolveCacheDir resolves the config's path against the config's directory"
 }
 
 test "resolveCacheDir falls back to the default location" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.write("what-changed.yaml", ONE_TARGET_CONFIG);
@@ -30,7 +30,7 @@ test "resolveCacheDir falls back to the default location" {
 }
 
 test "cacheShowCommand says where the cache is and how much is in it" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(ONE_TARGET_CONFIG, &.{ .{ "src/a.ts", "one" }, .{ "src/b.ts", "two" } });
@@ -46,7 +46,7 @@ test "cacheShowCommand says where the cache is and how much is in it" {
 }
 
 test "cacheShowCommand reports an empty cache rather than failing" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.write("what-changed.yaml", ONE_TARGET_CONFIG);
@@ -57,7 +57,7 @@ test "cacheShowCommand reports an empty cache rather than failing" {
 }
 
 test "cacheShowCommand renders json when asked" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(ONE_TARGET_CONFIG, &.{.{ "src/a.ts", "one" }});
@@ -72,7 +72,7 @@ test "cacheShowCommand renders json when asked" {
 }
 
 test "cacheCaptureCommand stores the hashes and says how many" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(ONE_TARGET_CONFIG, &.{ .{ "src/a.ts", "one" }, .{ "src/b.ts", "two" } });
@@ -83,7 +83,7 @@ test "cacheCaptureCommand stores the hashes and says how many" {
 }
 
 test "cacheResetCommand empties the cache and leaves the baseline alone" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(ONE_TARGET_CONFIG, &.{.{ "src/a.ts", "one" }});
@@ -110,7 +110,7 @@ test "cacheResetCommand empties the cache and leaves the baseline alone" {
 }
 
 test "cacheReset cannot reach the baseline, because they are different directories" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(ONE_TARGET_CONFIG, &.{.{ "src/a.ts", "one" }});
@@ -127,7 +127,7 @@ test "cacheReset cannot reach the baseline, because they are different directori
 }
 
 test "cacheCommand declares capture, reset and show, with capture's alias" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
@@ -142,7 +142,7 @@ test "cacheCommand declares capture, reset and show, with capture's alias" {
 }
 
 test "cache capture runs through the parser" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(ONE_TARGET_CONFIG, &.{ .{ "src/a.ts", "one" }, .{ "src/b.ts", "two" } });

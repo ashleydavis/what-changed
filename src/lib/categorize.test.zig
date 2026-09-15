@@ -40,7 +40,7 @@ test "watchedPathsFor merges the target's paths with the always list, sorted" {
     const allocator = arena.allocator();
 
     const config = try configFor(allocator, &.{ "package.json", "scripts" }, &.{.{ "unit", &.{"src"}, &.{} }});
-    const watched = try categorize.watchedPathsFor(allocator, &config, &config.targets[0]);
+    const watched = try categorize.watchedPathsFor(allocator, &config, &config.targets[0], .{});
 
     try testing.expectEqual(@as(usize, 3), watched.len);
     try testing.expectEqualStrings("package.json", watched[0]);
@@ -54,7 +54,7 @@ test "watchedPathsFor lists a path shared with the always list only once" {
     const allocator = arena.allocator();
 
     const config = try configFor(allocator, &.{"src"}, &.{.{ "unit", &.{ "src", "e2e" }, &.{} }});
-    const watched = try categorize.watchedPathsFor(allocator, &config, &config.targets[0]);
+    const watched = try categorize.watchedPathsFor(allocator, &config, &config.targets[0], .{});
 
     try testing.expectEqual(@as(usize, 2), watched.len);
     try testing.expectEqualStrings("e2e", watched[0]);
@@ -62,10 +62,10 @@ test "watchedPathsFor lists a path shared with the always list only once" {
 }
 
 test "isUnderWatchedPath matches the path itself and anything below it" {
-    try testing.expect(categorize.isUnderWatchedPath("src", "src"));
-    try testing.expect(categorize.isUnderWatchedPath("src/a.ts", "src"));
-    try testing.expect(categorize.isUnderWatchedPath("src/nested/a.ts", "src"));
-    try testing.expect(categorize.isUnderWatchedPath("package.json", "package.json"));
+    try testing.expect(categorize.isUnderWatchedPath("src", "src", .{}));
+    try testing.expect(categorize.isUnderWatchedPath("src/a.ts", "src", .{}));
+    try testing.expect(categorize.isUnderWatchedPath("src/nested/a.ts", "src", .{}));
+    try testing.expect(categorize.isUnderWatchedPath("package.json", "package.json", .{}));
 }
 
 test "isUnderWatchedPath does not match a directory that merely starts with the same letters" {
@@ -73,35 +73,35 @@ test "isUnderWatchedPath does not match a directory that merely starts with the 
     // The bug the separator check exists for. Without it "src" would claim every file under
     // "src-generated", and a target would be reported for changes it does not watch.
     //
-    try testing.expect(!categorize.isUnderWatchedPath("src-generated/a.ts", "src"));
-    try testing.expect(!categorize.isUnderWatchedPath("source", "src"));
+    try testing.expect(!categorize.isUnderWatchedPath("src-generated/a.ts", "src", .{}));
+    try testing.expect(!categorize.isUnderWatchedPath("source", "src", .{}));
 }
 
 test "isUnderWatchedPath does not match a path above the watched one" {
-    try testing.expect(!categorize.isUnderWatchedPath("src", "src/nested"));
-    try testing.expect(!categorize.isUnderWatchedPath("other/a.ts", "src"));
+    try testing.expect(!categorize.isUnderWatchedPath("src", "src/nested", .{}));
+    try testing.expect(!categorize.isUnderWatchedPath("other/a.ts", "src", .{}));
 }
 
 test "isWatchedBy answers for a list of watched paths" {
-    try testing.expect(categorize.isWatchedBy("src/a.ts", &.{ "docs", "src" }));
-    try testing.expect(!categorize.isWatchedBy("stray/a.ts", &.{ "docs", "src" }));
-    try testing.expect(!categorize.isWatchedBy("src/a.ts", &.{}));
+    try testing.expect(categorize.isWatchedBy("src/a.ts", &.{ "docs", "src" }, .{}));
+    try testing.expect(!categorize.isWatchedBy("stray/a.ts", &.{ "docs", "src" }, .{}));
+    try testing.expect(!categorize.isWatchedBy("src/a.ts", &.{}, .{}));
 }
 
 test "targetAppliesToPlatform lets a target with no platforms run anywhere" {
     const target = TargetConfig{ .name = "unit", .paths = &.{}, .platforms = &.{} };
-    try testing.expect(categorize.targetAppliesToPlatform(&target, "linux"));
-    try testing.expect(categorize.targetAppliesToPlatform(&target, "darwin"));
-    try testing.expect(categorize.targetAppliesToPlatform(&target, "win32"));
+    try testing.expect(categorize.targetAppliesToPlatform(&target, "linux", .{}));
+    try testing.expect(categorize.targetAppliesToPlatform(&target, "darwin", .{}));
+    try testing.expect(categorize.targetAppliesToPlatform(&target, "win32", .{}));
 }
 
 test "targetAppliesToPlatform is exclusive once a platform is named" {
     var platforms = [_][]const u8{ "linux", "darwin" };
     const target = TargetConfig{ .name = "mobile", .paths = &.{}, .platforms = &platforms };
 
-    try testing.expect(categorize.targetAppliesToPlatform(&target, "linux"));
-    try testing.expect(categorize.targetAppliesToPlatform(&target, "darwin"));
-    try testing.expect(!categorize.targetAppliesToPlatform(&target, "win32"));
+    try testing.expect(categorize.targetAppliesToPlatform(&target, "linux", .{}));
+    try testing.expect(categorize.targetAppliesToPlatform(&target, "darwin", .{}));
+    try testing.expect(!categorize.targetAppliesToPlatform(&target, "win32", .{}));
 }
 
 test "filesUnderWatchedPaths keeps only what falls under a watched path" {
@@ -115,7 +115,7 @@ test "filesUnderWatchedPaths keeps only what falls under a watched path" {
         .{ "stray/x.ts", "3" },
     });
 
-    var under = try categorize.filesUnderWatchedPaths(allocator, &hashes, &.{ "src", "docs" });
+    var under = try categorize.filesUnderWatchedPaths(allocator, &hashes, &.{ "src", "docs" }, .{});
     try testing.expectEqual(@as(usize, 2), under.count());
     try testing.expect(under.get("stray/x.ts") == null);
 }
@@ -125,7 +125,7 @@ test "unreadableUnderWatchedPaths keeps only what falls under a watched path" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const under = try categorize.unreadableUnderWatchedPaths(allocator, &.{ file_hash_test.unreadableAt("src/a.ts"), file_hash_test.unreadableAt("docs/g.md"), file_hash_test.unreadableAt("stray/x.ts") }, &.{ "src", "docs" });
+    const under = try categorize.unreadableUnderWatchedPaths(allocator, &.{ file_hash_test.unreadableAt("src/a.ts"), file_hash_test.unreadableAt("docs/g.md"), file_hash_test.unreadableAt("stray/x.ts") }, &.{ "src", "docs" }, .{});
     try testing.expectEqual(@as(usize, 2), under.len);
     try testing.expectEqualStrings("src/a.ts", under[0].path);
     try testing.expectEqualStrings("docs/g.md", under[1].path);
@@ -136,7 +136,7 @@ test "unreadableNotUnderWatchedPaths keeps only what falls under none of them" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const outside = try categorize.unreadableNotUnderWatchedPaths(allocator, &.{ file_hash_test.unreadableAt("src/a.ts"), file_hash_test.unreadableAt("docs/g.md"), file_hash_test.unreadableAt("stray/x.ts") }, &.{ "src", "docs" });
+    const outside = try categorize.unreadableNotUnderWatchedPaths(allocator, &.{ file_hash_test.unreadableAt("src/a.ts"), file_hash_test.unreadableAt("docs/g.md"), file_hash_test.unreadableAt("stray/x.ts") }, &.{ "src", "docs" }, .{});
     try testing.expectEqual(@as(usize, 1), outside.len);
     try testing.expectEqualStrings("stray/x.ts", outside[0].path);
 }
@@ -161,7 +161,7 @@ test "categorizeChanges puts each changed file under the target that watches it"
     try targets.put(allocator, "docs", try file_hashes_test.fromPairs(allocator, &.{.{ "documentation/g.txt", "same" }}));
     const baseline = Baseline{ .targets = targets, .files = .empty };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux", .{});
 
     try testing.expectEqual(@as(usize, 2), categorized.targets.len);
     try testing.expectEqual(@as(usize, 1), categorized.targets[0].changed_files.len);
@@ -183,7 +183,7 @@ test "categorizeChanges keeps the targets in config order, including the unchang
 
     var hashes: FileHashes = .empty;
     const baseline = Baseline{ .targets = .empty, .files = .empty };
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux", .{});
 
     try testing.expectEqual(@as(usize, 3), categorized.targets.len);
     try testing.expectEqualStrings("compile", categorized.targets[0].name);
@@ -200,7 +200,7 @@ test "categorizeChanges treats a target that was never captured as fully changed
     var hashes = try file_hashes_test.fromPairs(allocator, &.{ .{ "src/a.ts", "1" }, .{ "src/b.ts", "2" } });
     const baseline = Baseline{ .targets = .empty, .files = .empty };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux", .{});
     try testing.expect(!categorized.targets[0].ever_captured);
     try testing.expectEqual(@as(usize, 2), categorized.targets[0].changed_files.len);
     try testing.expectEqual(changed_files.FileChangeKind.added, categorized.targets[0].changed_files[0].kind);
@@ -227,7 +227,7 @@ test "categorizeChanges compares each target against its own record" {
     try targets.put(allocator, "stale", try file_hashes_test.fromPairs(allocator, &.{.{ "src/a.ts", "old" }}));
     const baseline = Baseline{ .targets = targets, .files = .empty };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux", .{});
     try testing.expectEqual(@as(usize, 0), categorized.targets[0].changed_files.len);
     try testing.expectEqual(@as(usize, 1), categorized.targets[1].changed_files.len);
 }
@@ -245,7 +245,7 @@ test "categorizeChanges never gives a wrong-platform target changed files" {
     var hashes = try file_hashes_test.fromPairs(allocator, &.{.{ "src/a.ts", "1" }});
     const baseline = Baseline{ .targets = .empty, .files = .empty };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux", .{});
 
     try testing.expect(categorized.targets[0].applies_here);
     try testing.expectEqual(@as(usize, 1), categorized.targets[0].changed_files.len);
@@ -267,7 +267,7 @@ test "categorizeChanges still counts a wrong-platform target's paths as watched"
     var hashes = try file_hashes_test.fromPairs(allocator, &.{.{ "mobile/app.ts", "1" }});
     const baseline = Baseline{ .targets = .empty, .files = .empty };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux", .{});
     try testing.expectEqual(@as(usize, 0), categorized.unwatched_files.len);
 }
 
@@ -280,7 +280,7 @@ test "categorizeChanges calls out a changed file no target watches" {
     var hashes = try file_hashes_test.fromPairs(allocator, &.{ .{ "src/a.ts", "1" }, .{ "stray/x.ts", "2" } });
     const baseline = Baseline{ .targets = .empty, .files = .empty };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux", .{});
     try testing.expectEqual(@as(usize, 1), categorized.unwatched_files.len);
     try testing.expectEqualStrings("stray/x.ts", categorized.unwatched_files[0].path);
 }
@@ -297,7 +297,7 @@ test "categorizeChanges measures unwatched files against the whole-tree record" 
         .files = try file_hashes_test.fromPairs(allocator, &.{.{ "stray/x.ts", "same" }}),
     };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux", .{});
     try testing.expectEqual(@as(usize, 0), categorized.unwatched_files.len);
 }
 
@@ -321,7 +321,7 @@ test "categorizeChanges does not report a deleted watched file as an unwatched c
         .files = try file_hashes_test.fromPairs(allocator, &.{.{ "src/gone.ts", "old" }}),
     };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{}, &baseline, "linux", .{});
     try testing.expectEqual(@as(usize, 1), categorized.targets[0].changed_files.len);
     try testing.expectEqual(@as(usize, 0), categorized.unwatched_files.len);
 }
@@ -332,7 +332,7 @@ test "unwatchedOnly narrows a record to the files no target watches" {
     const allocator = arena.allocator();
 
     var recorded = try file_hashes_test.fromPairs(allocator, &.{ .{ "src/a.ts", "1" }, .{ "stray/x.ts", "2" } });
-    var narrowed = try categorize.unwatchedOnly(allocator, &recorded, &.{"src"});
+    var narrowed = try categorize.unwatchedOnly(allocator, &recorded, &.{"src"}, .{});
 
     try testing.expectEqual(@as(usize, 1), narrowed.count());
     try testing.expectEqualStrings("2", narrowed.get("stray/x.ts").?);
@@ -350,7 +350,7 @@ test "capturedFilesFor records everything the target currently watches" {
         .{ "stray/x.ts", "3" },
     });
 
-    var captured = try categorize.capturedFilesFor(allocator, &config, &config.targets[0], &hashes);
+    var captured = try categorize.capturedFilesFor(allocator, &config, &config.targets[0], &hashes, .{});
     try testing.expectEqual(@as(usize, 2), captured.count());
     try testing.expectEqualStrings("1", captured.get("src/a.ts").?);
     try testing.expectEqualStrings("2", captured.get("package.json").?);
@@ -368,7 +368,7 @@ test "capturedFilesFor records only what it was given, which is only what was re
         .{ "docs/b.md", "2" },
     });
 
-    var captured = try categorize.capturedFilesFor(allocator, &config, &config.targets[0], &hashes);
+    var captured = try categorize.capturedFilesFor(allocator, &config, &config.targets[0], &hashes, .{});
     try testing.expectEqual(@as(usize, 1), captured.count());
     try testing.expectEqualStrings("1", captured.get("src/a.ts").?);
 }
@@ -389,7 +389,7 @@ test "categorizeChanges gives an unreadable file to the target that watches it" 
     try targets.put(allocator, "unit", try file_hashes_test.fromPairs(allocator, &.{.{ "src/locked.ts", "old" }}));
     const baseline = Baseline{ .targets = targets, .files = .empty };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{file_hash_test.unreadableAt("src/locked.ts")}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{file_hash_test.unreadableAt("src/locked.ts")}, &baseline, "linux", .{});
 
     try testing.expectEqual(@as(usize, 1), categorized.targets[0].changed_files.len);
     try testing.expectEqualStrings("src/locked.ts", categorized.targets[0].changed_files[0].path);
@@ -411,7 +411,7 @@ test "categorizeChanges reports an unreadable file no target watches as unwatche
     var hashes: FileHashes = .empty;
     const baseline = Baseline{ .targets = .empty, .files = .empty };
 
-    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{file_hash_test.unreadableAt("loose/locked.ts")}, &baseline, "linux");
+    const categorized = try categorize.categorizeChanges(allocator, &config, &hashes, &.{file_hash_test.unreadableAt("loose/locked.ts")}, &baseline, "linux", .{});
 
     try testing.expectEqual(@as(usize, 0), categorized.targets[0].changed_files.len);
     try testing.expectEqual(@as(usize, 1), categorized.unwatched_files.len);

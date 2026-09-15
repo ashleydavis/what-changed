@@ -4,14 +4,14 @@ const run = @import("run.zig");
 const testing = std.testing;
 
 test "buildFileTree writes the requested number of files, spread across directories" {
-    var test_io = wc.files.TestIo.init();
+    var test_io = wc.files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try wc.files.TemporaryDir.create(io);
+    var temporary = try wc.files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     const paths = try run.buildFileTree(io, allocator, temporary.path, 120);
@@ -24,34 +24,34 @@ test "buildFileTree writes the requested number of files, spread across director
 }
 
 test "buildFileTree gives every file different content, so hashing has real work to do" {
-    var test_io = wc.files.TestIo.init();
+    var test_io = wc.files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try wc.files.TemporaryDir.create(io);
+    var temporary = try wc.files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     const paths = try run.buildFileTree(io, allocator, temporary.path, 3);
 
     var cache: wc.file_hash.FileHashCache = .empty;
-    var hashes = (try wc.file_hash.hashFiles(io, allocator, temporary.path, paths, &cache)).hashes;
+    var hashes = (try wc.file_hash.hashFiles(io, allocator, temporary.path, paths, &cache, .{})).hashes;
 
     try testing.expect(!std.mem.eql(u8, hashes.get(paths[0]).?, hashes.get(paths[1]).?));
     try testing.expect(!std.mem.eql(u8, hashes.get(paths[1]).?, hashes.get(paths[2]).?));
 }
 
 test "buildFileTree writes files of the size the benchmark says it does" {
-    var test_io = wc.files.TestIo.init();
+    var test_io = wc.files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try wc.files.TemporaryDir.create(io);
+    var temporary = try wc.files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
 
     const paths = try run.buildFileTree(io, allocator, temporary.path, 1);
@@ -61,12 +61,12 @@ test "buildFileTree writes files of the size the benchmark says it does" {
 }
 
 test "elapsedMs measures forwards" {
-    var test_io = wc.files.TestIo.init();
+    var test_io = wc.files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
     const at = run.start(io);
-    wc.files.sleepMs(io, 1);
+    wc.files.sleepMs(io, 1, .{});
     try testing.expect(run.elapsedMs(io, at) >= 1.0);
 }
 
@@ -103,7 +103,7 @@ test "stageNames lists each stage once, in the order first measured" {
 }
 
 test "benchmarkSize measures every stage and stays within budget" {
-    var test_io = wc.files.TestIo.init();
+    var test_io = wc.files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

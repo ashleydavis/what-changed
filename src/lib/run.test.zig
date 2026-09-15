@@ -67,18 +67,18 @@ const Harness = struct {
         const harness = try testing.allocator.create(Harness);
         harness.* = .{
             .arena = std.heap.ArenaAllocator.init(testing.allocator),
-            .test_io = .init(),
+            .test_io = .init(.{}),
             .temporary = undefined,
             .captured = undefined,
             .out = undefined,
             .fail = undefined,
             .environ = undefined,
         };
-        harness.temporary = try files.TemporaryDir.create(harness.test_io.io());
+        harness.temporary = try files.TemporaryDir.create(harness.test_io.io(), .{});
         harness.environ = std.process.Environ.Map.init(harness.arena.allocator());
         harness.captured = std.Io.Writer.Allocating.init(harness.arena.allocator());
         harness.out = .{ .writer = &harness.captured.writer };
-        harness.fail = Failure.init(harness.arena.allocator());
+        harness.fail = Failure.init(harness.arena.allocator(), .{});
         return harness;
     }
 
@@ -445,7 +445,7 @@ test "report does not read a file twice when the cache is warm" {
     // The cache is written by every run, so the second one finds an entry whose mtime and size still
     // match and answers from it.
     //
-    var cache = try cache_store.loadCache(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/cache"));
+    var cache = try cache_store.loadCache(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/cache"), .{});
     try testing.expectEqual(@as(usize, 1), cache.file_hashes.count());
     try testing.expectEqual(@as(u64, 6), cache.file_hashes.get("src/a.ts").?.size);
 }
@@ -463,7 +463,7 @@ test "runBaseline captures every target when none is named" {
     try testing.expectEqual(@as(u8, 0), try run.runBaseline(&context, .{}, &.{}));
     try testing.expectEqualStrings("Captured the baseline for 2 target(s): unit, documentation.\n", harness.printed());
 
-    var baseline = (try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"))).baseline;
+    var baseline = (try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"), .{})).baseline;
     try testing.expectEqual(@as(usize, 2), baseline.targets.count());
 }
 
@@ -519,7 +519,7 @@ test "runBaseline records nothing at all when one of the names is unknown" {
     // Refused as a whole rather than partly applied. A capture that recorded "unit" and then failed
     // would leave the caller believing nothing had been recorded when something had.
     //
-    var baseline = (try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"))).baseline;
+    var baseline = (try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"), .{})).baseline;
     try testing.expectEqual(@as(usize, 0), baseline.targets.count());
 }
 
@@ -536,7 +536,7 @@ test "runBaseline records only what each target watches" {
 
     _ = try run.runBaseline(&context, .{}, &.{});
 
-    var baseline = (try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"))).baseline;
+    var baseline = (try baseline_store.loadBaseline(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/baseline.json"), .{})).baseline;
     try testing.expectEqual(@as(usize, 1), baseline.targets.get("unit").?.count());
     try testing.expect(baseline.targets.get("unit").?.get("stray/x.ts") == null);
 
@@ -556,7 +556,7 @@ test "runCacheCapture stores the hashes and touches no baseline" {
     try testing.expectEqual(@as(u8, 0), try run.runCacheCapture(&context, .{}));
     try testing.expectEqualStrings("Cache captured. 2 file hash(es) stored. The baseline is untouched.\n", harness.printed());
 
-    var cache = try cache_store.loadCache(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/cache"));
+    var cache = try cache_store.loadCache(harness.io(), harness.allocator(), try harness.temporary.join(harness.allocator(), ".what-changed/cache"), .{});
     try testing.expectEqual(@as(usize, 2), cache.file_hashes.count());
 
     //
@@ -647,7 +647,7 @@ test "allChangedFiles deduplicates a file watched by several targets" {
         .{ .name = "b", .watched_paths = &.{}, .applies_here = true, .ever_captured = true, .changed_files = &shared },
     };
 
-    const all = try run.allChangedFiles(allocator, .{ .targets = &targets, .unwatched_files = &stray });
+    const all = try run.allChangedFiles(allocator, .{ .targets = &targets, .unwatched_files = &stray }, .{});
     try testing.expectEqual(@as(usize, 2), all.len);
     try testing.expectEqualStrings("src/a.ts", all[0].path);
     try testing.expectEqualStrings("stray/x.ts", all[1].path);
@@ -658,7 +658,7 @@ test "allChangedFiles of nothing is nothing" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try testing.expectEqual(@as(usize, 0), (try run.allChangedFiles(allocator, .{ .targets = &.{}, .unwatched_files = &.{} })).len);
+    try testing.expectEqual(@as(usize, 0), (try run.allChangedFiles(allocator, .{ .targets = &.{}, .unwatched_files = &.{} }, .{})).len);
 }
 
 test "structuredReport renders only what each view is about" {
@@ -681,16 +681,16 @@ test "structuredReport renders only what each view is about" {
         .target_names = &names,
     };
 
-    const as_targets = try run.structuredReport(allocator, result, .targets);
+    const as_targets = try run.structuredReport(allocator, result, .targets, .{});
     try testing.expectEqual(@as(usize, 1), as_targets.object.count());
     try testing.expectEqualStrings("unit", value.get(as_targets, "targets").?.array.items[0].string);
 
-    const as_files = try run.structuredReport(allocator, result, .files);
+    const as_files = try run.structuredReport(allocator, result, .files, .{});
     try testing.expectEqual(false, value.get(as_files, "hasBaseline").?.bool);
     try testing.expectEqual(@as(i64, 3), value.get(as_files, "fileCount").?.integer);
     try testing.expectEqual(@as(usize, 1), value.get(as_files, "changed").?.array.items.len);
 
-    const as_summary = try run.structuredReport(allocator, result, .summary);
+    const as_summary = try run.structuredReport(allocator, result, .summary, .{});
     const first = value.get(as_summary, "targets").?.array.items[0];
     try testing.expectEqualStrings("unit", value.get(first, "name").?.string);
     try testing.expectEqualStrings("src", value.get(first, "watchedPaths").?.array.items[0].string);
@@ -729,7 +729,7 @@ test "filterIgnoredBaseline drops the ignored extensions from every record" {
         .files = try file_hashes_test.fromPairs(allocator, &.{ .{ "src/a.ts", "1" }, .{ "README.md", "3" } }),
     };
 
-    var filtered = try run.filterIgnoredBaseline(allocator, &baseline, &.{".md"});
+    var filtered = try run.filterIgnoredBaseline(allocator, &baseline, &.{".md"}, .{});
     try testing.expectEqual(@as(usize, 1), filtered.targets.get("unit").?.count());
     try testing.expect(filtered.targets.get("unit").?.get("src/notes.md") == null);
     try testing.expectEqual(@as(usize, 1), filtered.files.count());
@@ -745,7 +745,7 @@ test "filterIgnoredBaseline with nothing ignored changes nothing" {
         .files = try file_hashes_test.fromPairs(allocator, &.{.{ "README.md", "1" }}),
     };
 
-    var unchanged = try run.filterIgnoredBaseline(allocator, &baseline, &.{});
+    var unchanged = try run.filterIgnoredBaseline(allocator, &baseline, &.{}, .{});
     try testing.expectEqual(@as(usize, 1), unchanged.files.count());
 }
 
@@ -760,7 +760,7 @@ test "filterIgnoredFileHashes keeps only what is not ignored" {
         .{ "notes.txt", "3" },
     });
 
-    var filtered = try run.filterIgnoredFileHashes(allocator, &recorded, &.{ ".md", ".txt" });
+    var filtered = try run.filterIgnoredFileHashes(allocator, &recorded, &.{ ".md", ".txt" }, .{});
     try testing.expectEqual(@as(usize, 1), filtered.count());
     try testing.expectEqualStrings("1", filtered.get("src/a.ts").?);
 }

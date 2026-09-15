@@ -10,7 +10,7 @@ test "parse reads objects, arrays and scalars" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const parsed = try json.parse(allocator, "{\"a\": [1, \"two\", true, null]}");
+    const parsed = try json.parse(allocator, "{\"a\": [1, \"two\", true, null]}", .{});
     const array = value.get(parsed, "a").?.array;
     try testing.expectEqual(@as(usize, 4), array.items.len);
     try testing.expectEqual(@as(i64, 1), array.items[0].integer);
@@ -23,16 +23,16 @@ test "parse reports a syntax error rather than crashing" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    try testing.expectError(error.Syntax, json.parse(arena.allocator(), "{ not json"));
-    try testing.expectError(error.Syntax, json.parse(arena.allocator(), ""));
-    try testing.expectError(error.Syntax, json.parse(arena.allocator(), "[1, 2"));
+    try testing.expectError(error.Syntax, json.parse(arena.allocator(), "{ not json", .{}));
+    try testing.expectError(error.Syntax, json.parse(arena.allocator(), "", .{}));
+    try testing.expectError(error.Syntax, json.parse(arena.allocator(), "[1, 2", .{}));
 }
 
 test "parse keeps object keys in the order they were written" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const parsed = try json.parse(arena.allocator(), "{\"z\": 1, \"a\": 2, \"m\": 3}");
+    const parsed = try json.parse(arena.allocator(), "{\"z\": 1, \"a\": 2, \"m\": 3}", .{});
     const keys = parsed.object.keys();
     try testing.expectEqualStrings("z", keys[0]);
     try testing.expectEqualStrings("a", keys[1]);
@@ -55,7 +55,7 @@ test "stringify indents by two spaces" {
         \\  "fileCount": 4,
         \\  "changed": []
         \\}
-    , try json.stringify(allocator, .{ .object = object }));
+    , try json.stringify(allocator, .{ .object = object }, .{}));
 }
 
 test "stringify renders nested arrays of objects" {
@@ -82,7 +82,7 @@ test "stringify renders nested arrays of objects" {
         \\    }
         \\  ]
         \\}
-    , try json.stringify(allocator, .{ .object = object }));
+    , try json.stringify(allocator, .{ .object = object }, .{}));
 }
 
 test "a stringified value parses back to the same thing" {
@@ -94,7 +94,7 @@ test "a stringified value parses back to the same thing" {
     try object.put(allocator, "name", value.str("alpha"));
     try object.put(allocator, "count", value.int(12));
 
-    const round_tripped = try json.parse(allocator, try json.stringify(allocator, .{ .object = object }));
+    const round_tripped = try json.parse(allocator, try json.stringify(allocator, .{ .object = object }, .{}), .{});
     try testing.expectEqualStrings("alpha", value.get(round_tripped, "name").?.string);
     try testing.expectEqual(@as(i64, 12), value.get(round_tripped, "count").?.integer);
 }
@@ -104,7 +104,7 @@ test "parseOrFail names the format in the message" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     try testing.expectError(error.Failed, json.parseOrFail(allocator, "{ not json", "what-changed config", &fail));
     try testing.expect(std.mem.startsWith(u8, fail.text(), "what-changed config is not valid JSON: "));
 }
@@ -115,7 +115,7 @@ test "parseDetailed says what was wrong" {
     const allocator = arena.allocator();
 
     var detail: ?[]const u8 = null;
-    try testing.expectError(error.Syntax, json.parseDetailed(allocator, "[1, 2", &detail));
+    try testing.expectError(error.Syntax, json.parseDetailed(allocator, "[1, 2", &detail, .{}));
     try testing.expect(detail != null);
     try testing.expect(detail.?.len > 0);
 }
@@ -125,7 +125,7 @@ test "parseOrFail returns the value when the text is good" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
     const parsed = try json.parseOrFail(allocator, "{\"ok\": true}", "what-changed config", &fail);
     try testing.expectEqual(true, value.get(parsed, "ok").?.bool);
     try testing.expect(fail.message == null);

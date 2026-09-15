@@ -3,7 +3,7 @@ const wc = @import("what-changed");
 const targets = @import("targets.zig");
 const commander = wc.commander;
 const testing = std.testing;
-const harness = @import("harness.zig");
+const harness = @import("test/harness.zig");
 
 const TWO_TARGET_CONFIG =
     \\targets:
@@ -16,7 +16,7 @@ const TWO_TARGET_CONFIG =
 ;
 
 test "targetsCommand names only the affected targets" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(TWO_TARGET_CONFIG, &.{
@@ -34,7 +34,7 @@ test "targetsCommand names only the affected targets" {
 }
 
 test "targetsListCommand names every runnable target whatever has changed" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(TWO_TARGET_CONFIG, &.{.{ "src/a.ts", "one" }});
@@ -52,7 +52,7 @@ test "targetsListCommand names every runnable target whatever has changed" {
 }
 
 test "targetsListCommand excludes a target that cannot run here" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(
@@ -75,7 +75,7 @@ test "targetsListCommand excludes a target that cannot run here" {
 }
 
 test "buildTargetsCommand declares the list subcommand and turns positional options on" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
@@ -88,7 +88,7 @@ test "buildTargetsCommand declares the list subcommand and turns positional opti
 }
 
 test "--output after list reaches the subcommand rather than its parent" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(TWO_TARGET_CONFIG, &.{.{ "src/a.ts", "one" }});

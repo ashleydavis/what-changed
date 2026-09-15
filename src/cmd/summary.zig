@@ -3,6 +3,15 @@
 //
 
 const wc = @import("what-changed");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 
 const commander = wc.commander;
 
@@ -21,7 +30,7 @@ pub fn summaryCommand(context: *const Context, options: ReportOptions) wc.failur
 // Builds the `summary` command.
 //
 pub fn buildSummaryCommand(context: *const Context) *Command {
-    return Command.init(context.allocator, "summary")
+    return Command.init(context.allocator, "summary", context.fail.log)
         .description("Show the changed files grouped under the targets they fall under.")
         .option("--config <path>", "The config file to read. Defaults to what-changed.yaml, .yml or .json in the working directory.", null)
         .option("--output <format>", "How to render the result: text, json or yaml.", "text")

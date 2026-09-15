@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const wc = @import("what-changed");
 
 const commander = wc.commander;
@@ -99,20 +108,27 @@ pub const InitStep = enum {
 //
 // Writes the starter config, unless the project already has one.
 //
+// Which names count as "already has one" is a parameter rather than read here, so the check can be
+// asked about any list. `initCommand` passes every name the tool looks for.
+//
 // Every name the tool would look for counts as "already has one", not just the name this would
 // write. A project with a `what-changed.json` is set up, and adding a `what-changed.yaml` beside it
 // would take precedence over the config that project has been using.
 //
-pub fn writeStarterConfig(io: std.Io, allocator: std.mem.Allocator, cwd: []const u8, fail: *Failure) wc.failure.Error!InitStep {
-    for (wc.config.DEFAULT_CONFIG_NAMES) |name| {
+pub fn writeStarterConfig(io: std.Io, allocator: std.mem.Allocator, cwd: []const u8, already_set_up: []const []const u8, fail: *Failure) wc.failure.Error!InitStep {
+    const log = fail.log;
+    for (already_set_up) |name| {
+        if (an) annotate(log, "writeStarterConfig-names-iteration", "", .{});
         const candidate = try wc.files.joinPath(allocator, &.{ cwd, name });
-        if (wc.files.fileExists(io, candidate)) {
+        if (wc.files.fileExists(io, candidate, log)) {
+            if (an) annotate(log, "writeStarterConfig-already-set-up", "", .{});
             return .already_present;
         }
     }
 
     const config_path = try wc.files.joinPath(allocator, &.{ cwd, STARTER_CONFIG_NAME });
     wc.files.writeFile(io, config_path, STARTER_CONFIG) catch |err| {
+        if (an) annotate(log, "writeStarterConfig-will-not-write", "", .{});
         return fail.set("Failed to write the what-changed config at \"{s}\": {s}", .{
             config_path, try wc.files.describeOperation(allocator, err, "write", config_path),
         });
@@ -129,6 +145,7 @@ pub fn writeStarterConfig(io: std.Io, allocator: std.mem.Allocator, cwd: []const
 // entry is already there.
 //
 pub fn addGitignoreEntry(io: std.Io, allocator: std.mem.Allocator, cwd: []const u8, fail: *Failure) wc.failure.Error!InitStep {
+    const log = fail.log;
     const gitignore_path = try wc.files.joinPath(allocator, &.{ cwd, GITIGNORE_NAME });
 
     //
@@ -137,18 +154,21 @@ pub fn addGitignoreEntry(io: std.Io, allocator: std.mem.Allocator, cwd: []const 
     // whatever is actually wrong with the path.
     //
     const existing = wc.files.readFile(io, allocator, gitignore_path) catch {
+        if (an) annotate(log, "addGitignoreEntry-nothing-to-append-to", "", .{});
         try writeGitignore(io, allocator, gitignore_path, GITIGNORE_ENTRY ++ "\n", fail);
         return .created;
     };
 
     var lines = std.mem.splitScalar(u8, existing, '\n');
     while (lines.next()) |raw_line| {
+        if (an) annotate(log, "addGitignoreEntry-lines-iteration", "", .{});
         //
         // Trimmed before comparing so an indented entry, or one left with the carriage return of a
         // file written on Windows, still counts as already ignored.
         //
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (std.mem.eql(u8, line, GITIGNORE_ENTRY) or std.mem.eql(u8, line, GITIGNORE_ENTRY_NO_SLASH)) {
+            if (an) annotate(log, "addGitignoreEntry-already-ignored", "", .{});
             return .already_present;
         }
     }
@@ -171,7 +191,9 @@ pub fn addGitignoreEntry(io: std.Io, allocator: std.mem.Allocator, cwd: []const 
 // is worth the same message either way.
 //
 fn writeGitignore(io: std.Io, allocator: std.mem.Allocator, gitignore_path: []const u8, contents: []const u8, fail: *Failure) wc.failure.Error!void {
+    const log = fail.log;
     wc.files.writeFile(io, gitignore_path, contents) catch |err| {
+        if (an) annotate(log, "writeGitignore-will-not-write", "", .{});
         return fail.set("Failed to write \"{s}\": {s}", .{
             gitignore_path, try wc.files.describeOperation(allocator, err, "write", gitignore_path),
         });
@@ -186,16 +208,29 @@ fn writeGitignore(io: std.Io, allocator: std.mem.Allocator, gitignore_path: []co
 // not fail on the second run.
 //
 pub fn initCommand(context: *const Context) wc.failure.Error!u8 {
-    const config_step = try writeStarterConfig(context.io, context.allocator, context.cwd, context.fail);
+    const log = context.fail.log;
+    const config_step = try writeStarterConfig(context.io, context.allocator, context.cwd, &wc.config.DEFAULT_CONFIG_NAMES, context.fail);
     switch (config_step) {
-        .created => context.out.line("Wrote {s}.", .{STARTER_CONFIG_NAME}),
-        .already_present => context.out.line("This project already has a what-changed config, so none was written.", .{}),
+        .created => {
+            if (an) annotate(log, "initCommand-config-written", "", .{});
+            context.out.line("Wrote {s}.", .{STARTER_CONFIG_NAME});
+        },
+        .already_present => {
+            if (an) annotate(log, "initCommand-config-already-there", "", .{});
+            context.out.line("This project already has a what-changed config, so none was written.", .{});
+        },
     }
 
     const gitignore_step = try addGitignoreEntry(context.io, context.allocator, context.cwd, context.fail);
     switch (gitignore_step) {
-        .created => context.out.line("Added {s} to {s}.", .{ GITIGNORE_ENTRY, GITIGNORE_NAME }),
-        .already_present => context.out.line("{s} already ignores {s}, so it was left alone.", .{ GITIGNORE_NAME, GITIGNORE_ENTRY }),
+        .created => {
+            if (an) annotate(log, "initCommand-gitignore-written", "", .{});
+            context.out.line("Added {s} to {s}.", .{ GITIGNORE_ENTRY, GITIGNORE_NAME });
+        },
+        .already_present => {
+            if (an) annotate(log, "initCommand-gitignore-already-there", "", .{});
+            context.out.line("{s} already ignores {s}, so it was left alone.", .{ GITIGNORE_NAME, GITIGNORE_ENTRY });
+        },
     }
 
     //
@@ -203,6 +238,7 @@ pub fn initCommand(context: *const Context) wc.failure.Error!u8 {
     // config. A project that already had one has targets of its own and nothing to edit.
     //
     if (config_step == .created) {
+        if (an) annotate(log, "initCommand-say-what-to-edit", "", .{});
         context.out.line("Edit the targets in {s}, then run: what-changed summary", .{STARTER_CONFIG_NAME});
     }
 
@@ -218,7 +254,7 @@ pub fn initCommand(context: *const Context) wc.failure.Error!u8 {
 // not a question with an answer to render.
 //
 pub fn buildInitCommand(context: *const Context) *Command {
-    return Command.init(context.allocator, "init")
+    return Command.init(context.allocator, "init", context.fail.log)
         .description("Write a starter config and add .what-changed/ to .gitignore. Neither is overwritten.")
         .action(context, action);
 }

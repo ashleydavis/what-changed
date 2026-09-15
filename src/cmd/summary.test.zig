@@ -3,7 +3,7 @@ const wc = @import("what-changed");
 const summary = @import("summary.zig");
 const commander = wc.commander;
 const testing = std.testing;
-const harness = @import("harness.zig");
+const harness = @import("test/harness.zig");
 
 const TWO_TARGET_CONFIG =
     \\targets:
@@ -16,7 +16,7 @@ const TWO_TARGET_CONFIG =
 ;
 
 test "summaryCommand groups the changes under their targets" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(TWO_TARGET_CONFIG, &.{
@@ -35,7 +35,7 @@ test "summaryCommand groups the changes under their targets" {
 }
 
 test "summaryCommand honours --output" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(TWO_TARGET_CONFIG, &.{.{ "src/a.ts", "one" }});
@@ -46,7 +46,7 @@ test "summaryCommand honours --output" {
 }
 
 test "buildSummaryCommand declares the options and help the command line promises" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     const context = scenario.context();
@@ -60,7 +60,7 @@ test "buildSummaryCommand declares the options and help the command line promise
 }
 
 test "the summary command runs its action through the parser" {
-    var scenario = try harness.Scenario.create();
+    var scenario = try harness.Scenario.create(std.testing.allocator, .{});
     defer scenario.destroy();
 
     try scenario.project(TWO_TARGET_CONFIG, &.{.{ "src/a.ts", "one" }});

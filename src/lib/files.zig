@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 
 //
 // The filesystem operations the rest of the tool is built out of.
@@ -42,8 +51,11 @@ pub fn readFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u
 // the tool has always done, so a path that exists but cannot be read is skipped rather than chosen
 // and then refused.
 //
-pub fn fileExists(io: std.Io, path: []const u8) bool {
-    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+pub fn fileExists(io: std.Io, path: []const u8, log: Log) bool {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch {
+        if (an) annotate(log, "fileExists-cannot-be-opened", "", .{});
+        return false;
+    };
     file.close(io);
     return true;
 }
@@ -68,6 +80,7 @@ pub fn describeError(err: anyerror) []const u8 {
     };
 }
 
+
 //
 // The errno name that goes in front of a filesystem error, such as "ENOENT".
 //
@@ -88,6 +101,7 @@ pub fn errorCode(err: anyerror) []const u8 {
         else => @errorName(err),
     };
 }
+
 
 //
 // Describes a failed operation on a path, the whole message.
@@ -251,8 +265,10 @@ pub fn nowMs(io: std.Io) f64 {
 //
 // Waits for the given number of milliseconds.
 //
-pub fn sleepMs(io: std.Io, milliseconds: u64) void {
-    io.sleep(.fromNanoseconds(@intCast(milliseconds * std.time.ns_per_ms)), .real) catch {};
+pub fn sleepMs(io: std.Io, milliseconds: u64, log: Log) void {
+    io.sleep(.fromNanoseconds(@intCast(milliseconds * std.time.ns_per_ms)), .real) catch {
+        if (an) annotate(log, "sleepMs-interrupted", "", .{});
+    };
 }
 
 //
@@ -283,6 +299,12 @@ pub const TemporaryDir = struct {
     io: std.Io,
 
     //
+    // Where this directory's own branch markers go, held for the same reason the `Io` is: every
+    // method works against the directory it was made with.
+    //
+    log: Log = .{},
+
+    //
     // Where the path is allocated from. The page allocator rather than a caller's, so a test needs
     // no allocator to make a directory, and nothing here can be mistaken for a leak in the code
     // under test.
@@ -292,7 +314,7 @@ pub const TemporaryDir = struct {
     //
     // Makes a fresh empty directory under the system temporary directory.
     //
-    pub fn create(io: std.Io) !TemporaryDir {
+    pub fn create(io: std.Io, log: Log) !TemporaryDir {
         var random_bytes: [12]u8 = undefined;
         io.random(&random_bytes);
         const suffix = std.fmt.bytesToHex(random_bytes, .lower);
@@ -301,14 +323,16 @@ pub const TemporaryDir = struct {
         errdefer path_allocator.free(path);
 
         try makeDirPath(io, path);
-        return .{ .path = path, .io = io };
+        return .{ .path = path, .io = io, .log = log };
     }
 
     //
     // Removes the directory and everything in it.
     //
     pub fn destroy(self: *TemporaryDir) void {
-        std.Io.Dir.cwd().deleteTree(self.io, self.path) catch {};
+        std.Io.Dir.cwd().deleteTree(self.io, self.path) catch {
+            if (an) annotate(self.log, "destroy-already-gone", "", .{});
+        };
         path_allocator.free(self.path);
         self.path = &.{};
     }
@@ -344,8 +368,11 @@ pub const TemporaryDir = struct {
     //
     pub fn has(self: *const TemporaryDir, sub_path: []const u8) bool {
         var buffer: [512]u8 = undefined;
-        const full_path = std.fmt.bufPrint(&buffer, "{s}/{s}", .{ self.path, sub_path }) catch return false;
-        return fileExists(self.io, full_path);
+        const full_path = std.fmt.bufPrint(&buffer, "{s}/{s}", .{ self.path, sub_path }) catch {
+            if (an) annotate(self.log, "has-path-too-long", "", .{});
+            return false;
+        };
+        return fileExists(self.io, full_path, self.log);
     }
 };
 
@@ -360,11 +387,16 @@ pub const TestIo = struct {
     threaded: std.Io.Threaded,
 
     //
+    // Where this one's own branch markers go.
+    //
+    log: Log = .{},
+
+    //
     // The page allocator rather than the testing allocator: this belongs to the test itself, not to
     // the code under test, so it must not show up in that code's leak checking.
     //
-    pub fn init() TestIo {
-        return .{ .threaded = .init(std.heap.page_allocator, .{}) };
+    pub fn init(log: Log) TestIo {
+        return .{ .threaded = .init(std.heap.page_allocator, .{}), .log = log };
     }
 
     pub fn io(self: *TestIo) std.Io {

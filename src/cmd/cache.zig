@@ -1,4 +1,13 @@
 const wc = @import("what-changed");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 
 const commander = wc.commander;
 
@@ -29,9 +38,11 @@ pub fn resolveCacheDir(context: *const Context, options: ReportOptions) wc.failu
 // Empties the file hash cache, so the next report rehashes every file.
 //
 pub fn cacheResetCommand(context: *const Context, options: ReportOptions) wc.failure.Error!u8 {
+    const log = context.fail.log;
     const cache_dir = try resolveCacheDir(context, options);
 
-    wc.cache_store.cacheReset(context.io, context.allocator, cache_dir) catch |err| {
+    wc.cache_store.cacheReset(context.io, context.allocator, cache_dir, log) catch |err| {
+        if (an) annotate(log, "cacheResetCommand-will-not-write", "", .{});
         return context.fail.set("Failed to reset the cache in \"{s}\": {s}", .{ cache_dir, wc.files.describeError(err) });
     };
 
@@ -53,14 +64,16 @@ pub fn cacheCaptureCommand(context: *const Context, options: ReportOptions) wc.f
 // Says where the cache is kept and how much is in it.
 //
 pub fn cacheShowCommand(context: *const Context, options: ReportOptions) wc.failure.Error!u8 {
+    const log = context.fail.log;
     const allocator = context.allocator;
 
     const cache_dir = try resolveCacheDir(context, options);
-    var cache = try wc.cache_store.loadCache(context.io, allocator, cache_dir);
+    var cache = try wc.cache_store.loadCache(context.io, allocator, cache_dir, log);
     const entry_count = cache.file_hashes.count();
     const format = try wc.output.parseOutputFormat(options.output, context.fail);
 
     if (format != .text) {
+        if (an) annotate(log, "cacheShowCommand-machine-readable", "", .{});
         var object: wc.value.Object = .empty;
         try object.put(allocator, "cacheDir", wc.value.str(cache_dir));
         try object.put(allocator, "entryCount", wc.value.int(@intCast(entry_count)));
@@ -79,7 +92,7 @@ pub fn cacheShowCommand(context: *const Context, options: ReportOptions) wc.fail
 // Builds the `cache` command.
 //
 pub fn cacheCommand(context: *const Context) *Command {
-    const cmd = Command.init(context.allocator, "cache")
+    const cmd = Command.init(context.allocator, "cache", context.fail.log)
         .description("Manage the file hash cache. Nothing in it affects what is reported.");
 
     _ = cmd.command("capture")

@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 
 //
 // The parts of `commander` this tool uses, in Zig.
@@ -78,12 +87,18 @@ pub const Option = struct {
     default_value: ?[]const u8,
 
     //
+    // Where this option's own branch markers go.
+    //
+    log: Log = .{},
+
+    //
     // The name an action looks it up by: the flags with the leading dashes and the placeholder
     // taken off, so "--config <path>" is read as "config".
     //
     pub fn name(self: Option) []const u8 {
         var text = self.flags;
         if (std.mem.indexOfScalar(u8, text, ' ')) |space| {
+            if (an) annotate(self.log, "name-has-a-placeholder", "", .{});
             text = text[0..space];
         }
         return std.mem.trimStart(u8, text, "-");
@@ -131,6 +146,11 @@ pub const Invocation = struct {
     // What the process should exit with. An action sets it, and `parse` hands it back to `main`.
     //
     exit_code: u8 = 0,
+
+    //
+    // Where this invocation's own branch markers go.
+    //
+    log: Log = .{},
 
     //
     // The value of an option, or null when it was not given and has no default.
@@ -222,6 +242,12 @@ pub const Command = struct {
     positional_options: bool = false,
 
     //
+    // Where this command's own branch markers go. Carried here rather than passed to each builder
+    // method, because a definition is one chain of calls onto the command itself.
+    //
+    log: Log = .{},
+
+    //
     // Makes a command.
     //
     // Panics if there is no memory, rather than returning an error, which is what every builder
@@ -230,9 +256,9 @@ pub const Command = struct {
     // an error here would only mean a `try` on every call and no chaining, which is the whole point
     // of writing it this way.
     //
-    pub fn init(allocator: std.mem.Allocator, command_name: []const u8) *Command {
+    pub fn init(allocator: std.mem.Allocator, command_name: []const u8, log: Log) *Command {
         const created = allocator.create(Command) catch @panic("out of memory building the command line");
-        created.* = .{ .allocator = allocator, .command_name = command_name };
+        created.* = .{ .allocator = allocator, .command_name = command_name, .log = log };
         return created;
     }
 
@@ -351,7 +377,7 @@ pub const Command = struct {
     // is the one place chaining changes what it is chaining on.
     //
     pub fn command(self: *Command, sub_name: []const u8) *Command {
-        const sub = Command.init(self.allocator, sub_name);
+        const sub = Command.init(self.allocator, sub_name, self.log);
         self.addCommand(sub);
         return sub;
     }
@@ -360,9 +386,16 @@ pub const Command = struct {
     // True when a word names this command.
     //
     pub fn matches(self: *const Command, word: []const u8) bool {
-        if (std.mem.eql(u8, self.command_name, word)) return true;
+        if (std.mem.eql(u8, self.command_name, word)) {
+            if (an) annotate(self.log, "matches-its-own-name", "", .{});
+            return true;
+        }
         for (self.aliases.items) |alias_name| {
-            if (std.mem.eql(u8, alias_name, word)) return true;
+            if (an) annotate(self.log, "matches-aliases-iteration", "", .{});
+            if (std.mem.eql(u8, alias_name, word)) {
+                if (an) annotate(self.log, "matches-an-alias", "", .{});
+                return true;
+            }
         }
         return false;
     }
@@ -372,7 +405,11 @@ pub const Command = struct {
     //
     pub fn findSubcommand(self: *const Command, word: []const u8) ?*Command {
         for (self.subcommands.items) |sub| {
-            if (sub.matches(word)) return sub;
+            if (an) annotate(self.log, "findSubcommand-subcommands-iteration", "", .{});
+            if (sub.matches(word)) {
+                if (an) annotate(self.log, "findSubcommand-found", "", .{});
+                return sub;
+            }
         }
         return null;
     }
@@ -382,13 +419,19 @@ pub const Command = struct {
     //
     pub fn findOption(self: *const Command, flag: []const u8) ?Option {
         for (self.options.items) |candidate| {
+            if (an) annotate(self.log, "findOption-options-iteration", "", .{});
             var flags = std.mem.splitSequence(u8, candidate.flags, ", ");
             while (flags.next()) |spelling| {
+                if (an) annotate(self.log, "findOption-spellings-iteration", "", .{});
                 var spelled = spelling;
                 if (std.mem.indexOfScalar(u8, spelled, ' ')) |space| {
+                    if (an) annotate(self.log, "findOption-has-a-placeholder", "", .{});
                     spelled = spelled[0..space];
                 }
-                if (std.mem.eql(u8, spelled, flag)) return candidate;
+                if (std.mem.eql(u8, spelled, flag)) {
+                    if (an) annotate(self.log, "findOption-found", "", .{});
+                    return candidate;
+                }
             }
         }
         return null;
@@ -398,15 +441,18 @@ pub const Command = struct {
     // True when a flag is one of the spellings of this command's help option.
     //
     pub fn isHelpFlag(self: *const Command, flag: []const u8) bool {
-        return namedBy(self.help_flags, flag);
+        return namedBy(self.help_flags, flag, self.log);
     }
 
     //
     // True when a flag is one of the spellings of this command's version option.
     //
     pub fn isVersionFlag(self: *const Command, flag: []const u8) bool {
-        if (self.version_text == null) return false;
-        return namedBy(self.version_flags, flag);
+        if (self.version_text == null) {
+            if (an) annotate(self.log, "isVersionFlag-no-version", "", .{});
+            return false;
+        }
+        return namedBy(self.version_flags, flag, self.log);
     }
 };
 
@@ -416,21 +462,26 @@ pub const Command = struct {
 // Commander's is a module-level singleton. This one is made per call, because it needs an allocator
 // and because a singleton would make two programs in one test share state.
 //
-pub fn program(allocator: std.mem.Allocator) *Command {
-    return Command.init(allocator, "");
+pub fn program(allocator: std.mem.Allocator, log: Log) *Command {
+    return Command.init(allocator, "", log);
 }
 
 //
 // True when a flag appears in a comma-separated spelling list such as "-v, --version".
 //
-pub fn namedBy(flags: []const u8, flag: []const u8) bool {
+pub fn namedBy(flags: []const u8, flag: []const u8, log: Log) bool {
     var spellings = std.mem.splitSequence(u8, flags, ", ");
     while (spellings.next()) |spelling| {
+        if (an) annotate(log, "namedBy-spellings-iteration", "", .{});
         var spelled = spelling;
         if (std.mem.indexOfScalar(u8, spelled, ' ')) |space| {
+            if (an) annotate(log, "namedBy-has-a-placeholder", "", .{});
             spelled = spelled[0..space];
         }
-        if (std.mem.eql(u8, spelled, flag)) return true;
+        if (std.mem.eql(u8, spelled, flag)) {
+            if (an) annotate(log, "namedBy-found", "", .{});
+            return true;
+        }
     }
     return false;
 }
@@ -476,10 +527,18 @@ pub const Program = struct {
     exit_code: u8 = 0,
 
     //
+    // Where this program's own branch markers go.
+    //
+    log: Log = .{},
+
+    //
     // Records why the command line was refused, in commander's wording.
     //
     fn refuse(self: *Program, allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) Error {
-        self.message = std.fmt.allocPrint(allocator, fmt, args) catch return error.OutOfMemory;
+        self.message = std.fmt.allocPrint(allocator, fmt, args) catch {
+            if (an) annotate(self.log, "refuse-no-room", "", .{});
+            return error.OutOfMemory;
+        };
         return error.Refused;
     }
 };
@@ -505,24 +564,32 @@ pub fn parse(runner: *Program, root: *Command, argv: []const []const u8) Error!v
     var options_ended = false;
 
     while (at < argv.len) : (at += 1) {
+        if (an) annotate(runner.log, "parse-words-iteration", "", .{});
         const word = argv[at];
 
         if (!options_ended and std.mem.eql(u8, word, "--")) {
+            if (an) annotate(runner.log, "parse-end-of-options", "", .{});
             options_ended = true;
             continue;
         }
 
         if (!options_ended and isOption(word)) {
+            if (an) annotate(runner.log, "parse-an-option", "", .{});
             if (current.isHelpFlag(word)) {
+                if (an) annotate(runner.log, "parse-help-asked-for", "", .{});
                 try writeHelp(runner.out, current, allocator);
                 return error.Displayed;
             }
             if (current.isVersionFlag(word)) {
-                runner.out.print("{s}\n", .{current.version_text.?}) catch {};
+                if (an) annotate(runner.log, "parse-version-asked-for", "", .{});
+                runner.out.print("{s}\n", .{current.version_text.?}) catch {
+                    if (an) annotate(runner.log, "parse-nowhere-to-print-the-version", "", .{});
+                };
                 return error.Displayed;
             }
 
             const found = current.findOption(word) orelse {
+                if (an) annotate(runner.log, "parse-unknown-option", "", .{});
                 return runner.refuse(allocator, "error: unknown option '{s}'", .{word});
             };
 
@@ -532,6 +599,7 @@ pub fn parse(runner: *Program, root: *Command, argv: []const []const u8) Error!v
             //
             at += 1;
             if (at >= argv.len) {
+                if (an) annotate(runner.log, "parse-option-value-missing", "", .{});
                 return runner.refuse(allocator, "error: option '{s}' argument missing", .{found.flags});
             }
             try values.put(allocator, found.name(), argv[at]);
@@ -542,7 +610,9 @@ pub fn parse(runner: *Program, root: *Command, argv: []const []const u8) Error!v
         // Not an option. It either names a subcommand or is a positional argument.
         //
         if (positionals.items.len == 0) {
+            if (an) annotate(runner.log, "parse-nothing-positional-yet", "", .{});
             if (current.findSubcommand(word)) |sub| {
+                if (an) annotate(runner.log, "parse-a-subcommand", "", .{});
                 //
                 // Descending into a subcommand. Options gathered so far stay with the parent, which
                 // is what commander does, and the child starts with its own empty set.
@@ -555,17 +625,20 @@ pub fn parse(runner: *Program, root: *Command, argv: []const []const u8) Error!v
         }
 
         if (current.argument_spec == null) {
+            if (an) annotate(runner.log, "parse-takes-no-argument", "", .{});
             //
             // A word where nothing is expected. When the command has subcommands, commander calls
             // it an unknown command; otherwise it is one argument too many.
             //
             if (current.subcommands.items.len > 0) {
+                if (an) annotate(runner.log, "parse-unknown-command", "", .{});
                 return runner.refuse(allocator, "error: unknown command '{s}'", .{word});
             }
             return runner.refuse(allocator, "error: too many arguments. Expected 0 arguments but got {d}.", .{argv.len - at});
         }
 
         if (positionals.items.len > 0 and !isVariadic(current.argument_spec.?.spec)) {
+            if (an) annotate(runner.log, "parse-one-argument-too-many", "", .{});
             return runner.refuse(allocator, "error: too many arguments. Expected 1 argument but got {d}.", .{positionals.items.len + 1});
         }
 
@@ -577,8 +650,11 @@ pub fn parse(runner: *Program, root: *Command, argv: []const []const u8) Error!v
     // arrives as "text" without the command line saying so.
     //
     for (current.options.items) |candidate| {
+        if (an) annotate(runner.log, "parse-defaults-iteration", "", .{});
         if (candidate.default_value) |default_value| {
+            if (an) annotate(runner.log, "parse-has-a-default", "", .{});
             if (!values.contains(candidate.name())) {
+                if (an) annotate(runner.log, "parse-default-used", "", .{});
                 try values.put(allocator, candidate.name(), default_value);
             }
         }
@@ -589,6 +665,7 @@ pub fn parse(runner: *Program, root: *Command, argv: []const []const u8) Error!v
     // does for a bare `what-changed baseline`.
     //
     const run = current.action_fn orelse {
+        if (an) annotate(runner.log, "parse-no-action", "", .{});
         try writeHelp(runner.out, current, allocator);
         return error.Displayed;
     };
@@ -597,14 +674,19 @@ pub fn parse(runner: *Program, root: *Command, argv: []const []const u8) Error!v
         .context = current.action_context.?,
         .args = positionals.items,
         .values = values,
+        .log = runner.log,
     };
 
     run(&invocation) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
+        error.OutOfMemory => {
+            if (an) annotate(runner.log, "parse-no-room", "", .{});
+            return error.OutOfMemory;
+        },
         else => {
+            if (an) annotate(runner.log, "parse-the-action-failed", "", .{});
             //
-            // An action that failed has already put its message where the CLI will find it. What
-            // reaches here is only the fact that it failed.
+            // An action that failed has already put its message where the CLI will find it.
+            // What reaches here is only the fact that it failed.
             //
             runner.exit_code = 1;
             return error.Refused;
@@ -619,7 +701,9 @@ pub fn parse(runner: *Program, root: *Command, argv: []const []const u8) Error!v
 //
 pub fn writeHelp(out: *std.Io.Writer, command: *const Command, allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
     const rendered = try renderHelp(allocator, command);
-    out.print("{s}", .{rendered}) catch {};
+    out.print("{s}", .{rendered}) catch {
+        if (an) annotate(command.log, "writeHelp-nowhere-to-print", "", .{});
+    };
 }
 
 //
@@ -637,19 +721,23 @@ pub fn renderHelp(allocator: std.mem.Allocator, command: *const Command) std.mem
     //
     try out.print(allocator, "Usage: {s}", .{command.command_name});
     if (command.options.items.len > 0 or command.version_text != null) {
+        if (an) annotate(command.log, "renderHelp-takes-options", "", .{});
         try out.appendSlice(allocator, " [options]");
     }
     if (command.argument_spec) |spec| {
+        if (an) annotate(command.log, "renderHelp-takes-an-argument", "", .{});
         try out.print(allocator, " {s}", .{spec.spec});
     }
     if (command.subcommands.items.len > 0) {
+        if (an) annotate(command.log, "renderHelp-has-subcommands", "", .{});
         try out.appendSlice(allocator, " [command]");
     }
     try out.appendSlice(allocator, "\n");
 
     if (command.description_text.len > 0) {
+        if (an) annotate(command.log, "renderHelp-has-a-description", "", .{});
         try out.appendSlice(allocator, "\n");
-        try writeWrapped(&out, allocator, command.description_text, 0);
+        try writeWrapped(&out, allocator, command.description_text, 0, command.log);
     }
 
     //
@@ -657,27 +745,34 @@ pub fn renderHelp(allocator: std.mem.Allocator, command: *const Command) std.mem
     //
     try out.appendSlice(allocator, "\nOptions:\n");
     if (command.version_text != null) {
-        try writeTwoColumn(&out, allocator, command.version_flags, command.version_description);
+        if (an) annotate(command.log, "renderHelp-has-a-version", "", .{});
+        try writeTwoColumn(&out, allocator, command.version_flags, command.version_description, command.log);
     }
     for (command.options.items) |candidate| {
+        if (an) annotate(command.log, "renderHelp-options-iteration", "", .{});
         if (candidate.default_value) |default_value| {
+            if (an) annotate(command.log, "renderHelp-option-has-a-default", "", .{});
             const text = try std.fmt.allocPrint(allocator, "{s} (default: \"{s}\")", .{ candidate.description, default_value });
-            try writeTwoColumn(&out, allocator, candidate.flags, text);
+            try writeTwoColumn(&out, allocator, candidate.flags, text, command.log);
         } else {
-            try writeTwoColumn(&out, allocator, candidate.flags, candidate.description);
+            if (an) annotate(command.log, "renderHelp-option-has-no-default", "", .{});
+            try writeTwoColumn(&out, allocator, candidate.flags, candidate.description, command.log);
         }
     }
-    try writeTwoColumn(&out, allocator, command.help_flags, command.help_description);
+    try writeTwoColumn(&out, allocator, command.help_flags, command.help_description, command.log);
 
     if (command.subcommands.items.len > 0) {
+        if (an) annotate(command.log, "renderHelp-lists-subcommands", "", .{});
         try out.appendSlice(allocator, "\nCommands:\n");
         for (command.subcommands.items) |sub| {
-            try writeTwoColumn(&out, allocator, try subcommandTerm(allocator, sub), sub.description_text);
+            if (an) annotate(command.log, "renderHelp-subcommands-iteration", "", .{});
+            try writeTwoColumn(&out, allocator, try subcommandTerm(allocator, sub), sub.description_text, command.log);
         }
-        try writeTwoColumn(&out, allocator, "help [command]", "display help for command");
+        try writeTwoColumn(&out, allocator, "help [command]", "display help for command", command.log);
     }
 
     if (command.help_text_after.len > 0) {
+        if (an) annotate(command.log, "renderHelp-has-text-after", "", .{});
         try out.appendSlice(allocator, command.help_text_after);
         try out.appendSlice(allocator, "\n");
     }
@@ -693,12 +788,15 @@ pub fn subcommandTerm(allocator: std.mem.Allocator, sub: *const Command) std.mem
 
     try term.appendSlice(allocator, sub.command_name);
     for (sub.aliases.items) |alias_name| {
+        if (an) annotate(sub.log, "subcommandTerm-aliases-iteration", "", .{});
         try term.print(allocator, "|{s}", .{alias_name});
     }
     if (sub.options.items.len > 0) {
+        if (an) annotate(sub.log, "subcommandTerm-takes-options", "", .{});
         try term.appendSlice(allocator, " [options]");
     }
     if (sub.argument_spec) |spec| {
+        if (an) annotate(sub.log, "subcommandTerm-takes-an-argument", "", .{});
         try term.print(allocator, " {s}", .{spec.spec});
     }
 
@@ -712,10 +810,11 @@ pub fn subcommandTerm(allocator: std.mem.Allocator, sub: *const Command) std.mem
 //
 // Writes one help row: a term on the left, its description wrapped on the right.
 //
-fn writeTwoColumn(out: *std.ArrayList(u8), allocator: std.mem.Allocator, term: []const u8, text: []const u8) std.mem.Allocator.Error!void {
+fn writeTwoColumn(out: *std.ArrayList(u8), allocator: std.mem.Allocator, term: []const u8, text: []const u8, log: Log) std.mem.Allocator.Error!void {
     try out.print(allocator, "  {s}", .{term});
 
     if (text.len == 0) {
+        if (an) annotate(log, "writeTwoColumn-nothing-to-describe", "", .{});
         try out.appendSlice(allocator, "\n");
         return;
     }
@@ -725,31 +824,39 @@ fn writeTwoColumn(out: *std.ArrayList(u8), allocator: std.mem.Allocator, term: [
     // commander does rather than letting the columns run into each other.
     //
     if (term.len > HELP_TERM_WIDTH - 2) {
+        if (an) annotate(log, "writeTwoColumn-term-too-wide", "", .{});
         try out.appendSlice(allocator, "\n");
         try out.appendNTimes(allocator, ' ', HELP_TERM_WIDTH + 2);
     } else {
+        if (an) annotate(log, "writeTwoColumn-term-fits", "", .{});
         try out.appendNTimes(allocator, ' ', HELP_TERM_WIDTH - term.len);
     }
 
-    try writeWrapped(out, allocator, text, HELP_TERM_WIDTH + 2);
+    try writeWrapped(out, allocator, text, HELP_TERM_WIDTH + 2, log);
 }
 
 //
 // Writes text, wrapping it at the help's width and indenting every line after the first.
 //
-fn writeWrapped(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8, indent: usize) std.mem.Allocator.Error!void {
+fn writeWrapped(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8, indent: usize, log: Log) std.mem.Allocator.Error!void {
     const width = HELP_TOTAL_WIDTH - indent;
 
     var column: usize = 0;
     var words = std.mem.splitScalar(u8, text, ' ');
     while (words.next()) |word| {
-        if (word.len == 0) continue;
+        if (an) annotate(log, "writeWrapped-words-iteration", "", .{});
+        if (word.len == 0) {
+            if (an) annotate(log, "writeWrapped-an-empty-word", "", .{});
+            continue;
+        }
 
         if (column > 0 and column + 1 + word.len > width) {
+            if (an) annotate(log, "writeWrapped-wrapped", "", .{});
             try out.appendSlice(allocator, "\n");
             try out.appendNTimes(allocator, ' ', indent);
             column = 0;
         } else if (column > 0) {
+            if (an) annotate(log, "writeWrapped-a-space-before-it", "", .{});
             try out.appendSlice(allocator, " ");
             column += 1;
         }

@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const failure = @import("failure.zig");
 const file_hashes = @import("file_hashes.zig");
 
@@ -30,18 +39,23 @@ pub const FileLister = *const fn (io: std.Io, environ: *const std.process.Enviro
 // to be a git repository.
 //
 pub fn listRepoFiles(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, root_dir: []const u8, fail: *Failure) failure.Error![][]const u8 {
-    return parseGitFileList(allocator, try runGitLsFiles(io, environ, allocator, root_dir, fail));
+    return parseGitFileList(allocator, try runGitLsFiles(io, environ, allocator, root_dir, fail), fail.log);
 }
 
 //
 // True when a path's extension is one the config says to leave out. Compared case-insensitively, so
 // a README.MD is treated the same as a readme.md.
 //
-pub fn isIgnoredFile(relative_path: []const u8, ignore: []const []const u8) bool {
+pub fn isIgnoredFile(relative_path: []const u8, ignore: []const []const u8, log: Log) bool {
     for (ignore) |extension| {
-        if (relative_path.len < extension.len) continue;
+        if (an) annotate(log, "isIgnoredFile-extensions-iteration", "", .{});
+        if (relative_path.len < extension.len) {
+            if (an) annotate(log, "isIgnoredFile-path-is-shorter", "", .{});
+            continue;
+        }
         const tail = relative_path[relative_path.len - extension.len ..];
         if (std.ascii.eqlIgnoreCase(tail, extension)) {
+            if (an) annotate(log, "isIgnoredFile-ignored", "", .{});
             return true;
         }
     }
@@ -53,14 +67,17 @@ pub fn isIgnoredFile(relative_path: []const u8, ignore: []const []const u8) bool
 // anything is hashed, so an ignored file is invisible to the hash tree, to every target's decision,
 // and to the changed-file listing alike.
 //
-pub fn filterIgnoredFiles(allocator: std.mem.Allocator, relative_paths: []const []const u8, ignore: []const []const u8) std.mem.Allocator.Error![][]const u8 {
+pub fn filterIgnoredFiles(allocator: std.mem.Allocator, relative_paths: []const []const u8, ignore: []const []const u8, log: Log) std.mem.Allocator.Error![][]const u8 {
     if (ignore.len == 0) {
+        if (an) annotate(log, "filterIgnoredFiles-nothing-ignored", "", .{});
         return allocator.dupe([]const u8, relative_paths);
     }
 
     var kept: std.ArrayList([]const u8) = .empty;
     for (relative_paths) |relative_path| {
-        if (!isIgnoredFile(relative_path, ignore)) {
+        if (an) annotate(log, "filterIgnoredFiles-paths-iteration", "", .{});
+        if (!isIgnoredFile(relative_path, ignore, log)) {
+            if (an) annotate(log, "filterIgnoredFiles-kept", "", .{});
             try kept.append(allocator, relative_path);
         }
     }
@@ -74,18 +91,20 @@ pub fn filterIgnoredFiles(allocator: std.mem.Allocator, relative_paths: []const 
 // streams, including paths that are awkward or impossible to create on every filesystem, without
 // spawning a real git process.
 //
-pub fn parseGitFileList(allocator: std.mem.Allocator, stdout: []const u8) std.mem.Allocator.Error![][]const u8 {
+pub fn parseGitFileList(allocator: std.mem.Allocator, stdout: []const u8, log: Log) std.mem.Allocator.Error![][]const u8 {
     var unique: std.StringArrayHashMapUnmanaged(void) = .empty;
 
     var entries = std.mem.splitScalar(u8, stdout, 0);
     while (entries.next()) |entry| {
+        if (an) annotate(log, "parseGitFileList-entries-iteration", "", .{});
         if (entry.len > 0) {
+            if (an) annotate(log, "parseGitFileList-named-something", "", .{});
             try unique.put(allocator, entry, {});
         }
     }
 
     const paths = try allocator.dupe([]const u8, unique.keys());
-    std.mem.sort([]const u8, paths, {}, file_hashes.lessThanPath);
+    std.mem.sort([]const u8, paths, file_hashes.Ordering{ .log = log }, file_hashes.lessThanPath);
     return paths;
 }
 
@@ -107,6 +126,7 @@ pub fn runGitLsFiles(io: std.Io, environ: *const std.process.Environ.Map, alloca
         .cwd = .{ .path = root_dir },
         .environ_map = environ,
     }) catch |err| {
+        if (an) annotate(fail.log, "runGitLsFiles-could-not-start", "", .{});
         //
         // git could not be started at all, which usually means it is not installed. Named as such
         // rather than reported as an exit code, because there was no exit.
@@ -116,13 +136,18 @@ pub fn runGitLsFiles(io: std.Io, environ: *const std.process.Environ.Map, alloca
 
     switch (result.term) {
         .exited => |code| {
+            if (an) annotate(fail.log, "runGitLsFiles-exited", "", .{});
             if (code != 0) {
+                if (an) annotate(fail.log, "runGitLsFiles-refused", "", .{});
                 return fail.set("git ls-files failed in \"{s}\" with exit code {d}: {s}", .{
                     root_dir, code, std.mem.trim(u8, result.stderr, " \t\r\n"),
                 });
             }
         },
-        else => return fail.set("git ls-files failed in \"{s}\": it was killed before it finished", .{root_dir}),
+        else => {
+            if (an) annotate(fail.log, "runGitLsFiles-killed", "", .{});
+            return fail.set("git ls-files failed in \"{s}\": it was killed before it finished", .{root_dir});
+        },
     }
 
     return result.stdout;

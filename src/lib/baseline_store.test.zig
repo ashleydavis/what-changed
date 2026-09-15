@@ -28,9 +28,9 @@ test "toBaseline reads both halves of a recorded baseline" {
         \\  "targets": { "unit": { "src/a.ts": "hash-a" } },
         \\  "files": { "src/a.ts": "hash-a", "README.md": "hash-r" }
         \\}
-    );
+    , .{});
 
-    var baseline = try baseline_store.toBaseline(allocator, parsed);
+    var baseline = try baseline_store.toBaseline(allocator, parsed, .{});
     try testing.expectEqual(@as(usize, 1), baseline.targets.count());
     try testing.expectEqualStrings("hash-a", baseline.targets.get("unit").?.get("src/a.ts").?);
     try testing.expectEqual(@as(usize, 2), baseline.files.count());
@@ -43,11 +43,11 @@ test "toBaseline treats a half that is not an object as absent" {
 
     const json = @import("json.zig");
 
-    var no_targets = try baseline_store.toBaseline(allocator, try json.parse(allocator, "{\"targets\": [], \"files\": {\"a\": \"1\"}}"));
+    var no_targets = try baseline_store.toBaseline(allocator, try json.parse(allocator, "{\"targets\": [], \"files\": {\"a\": \"1\"}}", .{}), .{});
     try testing.expectEqual(@as(usize, 0), no_targets.targets.count());
     try testing.expectEqual(@as(usize, 1), no_targets.files.count());
 
-    var no_files = try baseline_store.toBaseline(allocator, try json.parse(allocator, "{\"targets\": {\"unit\": {}}, \"files\": 7}"));
+    var no_files = try baseline_store.toBaseline(allocator, try json.parse(allocator, "{\"targets\": {\"unit\": {}}, \"files\": 7}", .{}), .{});
     try testing.expectEqual(@as(usize, 1), no_files.targets.count());
     try testing.expectEqual(@as(usize, 0), no_files.files.count());
 }
@@ -62,8 +62,8 @@ test "toBaseline reads an old flat file as no baseline at all" {
     // structure. Reading it as empty means everything counts as changed, which is the safe
     // direction after an upgrade.
     //
-    const parsed = try @import("json.zig").parse(allocator, "{\"src/a.ts\": \"hash-a\"}");
-    var baseline = try baseline_store.toBaseline(allocator, parsed);
+    const parsed = try @import("json.zig").parse(allocator, "{\"src/a.ts\": \"hash-a\"}", .{});
+    var baseline = try baseline_store.toBaseline(allocator, parsed, .{});
 
     try testing.expectEqual(@as(usize, 0), baseline.targets.count());
     try testing.expectEqual(@as(usize, 0), baseline.files.count());
@@ -74,7 +74,7 @@ test "toBaseline of an empty object is an empty baseline" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var baseline = try baseline_store.toBaseline(allocator, .{ .object = .empty });
+    var baseline = try baseline_store.toBaseline(allocator, .{ .object = .empty }, .{});
     try testing.expectEqual(@as(usize, 0), baseline.targets.count());
     try testing.expectEqual(@as(usize, 0), baseline.files.count());
 }
@@ -92,7 +92,7 @@ test "baselineToValue renders both halves, with the target names sorted" {
         .files = try file_hashes_test.fromPairs(allocator, &.{.{ "src/a.ts", "1" }}),
     };
 
-    const rendered = try baseline_store.baselineToValue(allocator, &baseline);
+    const rendered = try baseline_store.baselineToValue(allocator, &baseline, .{});
     const targets = value.get(rendered, "targets").?;
     try testing.expectEqualStrings("docs", targets.object.keys()[0]);
     try testing.expectEqualStrings("unit", targets.object.keys()[1]);
@@ -110,7 +110,7 @@ test "a baseline survives a round trip through a value" {
         .files = try file_hashes_test.fromPairs(allocator, &.{.{ "src/a.ts", "1" }}),
     };
 
-    var round_tripped = try baseline_store.toBaseline(allocator, try baseline_store.baselineToValue(allocator, &baseline));
+    var round_tripped = try baseline_store.toBaseline(allocator, try baseline_store.baselineToValue(allocator, &baseline, .{}), .{});
     try testing.expectEqual(@as(usize, 2), round_tripped.targets.get("unit").?.count());
     try testing.expectEqualStrings("2", round_tripped.targets.get("unit").?.get("src/b.ts").?);
     try testing.expectEqual(@as(usize, 1), round_tripped.files.count());
@@ -130,7 +130,7 @@ test "withCapturedTargets replaces the named targets and leaves the others" {
     };
 
     const captured = try baselinesFor(allocator, &.{.{ "unit", &.{.{ "src/a.ts", "new" }} }});
-    const updated = try baseline_store.withCapturedTargets(allocator, &baseline, &captured, try file_hashes_test.fromPairs(allocator, &.{.{ "src/a.ts", "new" }}));
+    const updated = try baseline_store.withCapturedTargets(allocator, &baseline, &captured, try file_hashes_test.fromPairs(allocator, &.{.{ "src/a.ts", "new" }}), .{});
 
     try testing.expectEqualStrings("new", updated.targets.get("unit").?.get("src/a.ts").?);
     //
@@ -149,13 +149,13 @@ test "withCapturedTargets adds a target that was never captured before" {
     const baseline = baseline_store.Baseline{ .targets = .empty, .files = .empty };
     const captured = try baselinesFor(allocator, &.{.{ "new-target", &.{.{ "src/a.ts", "1" }} }});
 
-    const updated = try baseline_store.withCapturedTargets(allocator, &baseline, &captured, .empty);
+    const updated = try baseline_store.withCapturedTargets(allocator, &baseline, &captured, .empty, .{});
     try testing.expectEqual(@as(usize, 1), updated.targets.count());
     try testing.expectEqualStrings("1", updated.targets.get("new-target").?.get("src/a.ts").?);
 }
 
 test "loadBaseline reads what saveBaseline wrote" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -163,7 +163,7 @@ test "loadBaseline reads what saveBaseline wrote" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
     const path = try temporary.join(allocator, ".what-changed/baseline.json");
 
@@ -171,14 +171,14 @@ test "loadBaseline reads what saveBaseline wrote" {
         .targets = try baselinesFor(allocator, &.{.{ "unit", &.{.{ "src/a.ts", "1" }} }}),
         .files = try file_hashes_test.fromPairs(allocator, &.{.{ "src/a.ts", "1" }}),
     };
-    try baseline_store.saveBaseline(io, allocator, path, &baseline);
+    try baseline_store.saveBaseline(io, allocator, path, &baseline, .{});
 
-    var loaded = (try baseline_store.loadBaseline(io, allocator, path)).baseline;
+    var loaded = (try baseline_store.loadBaseline(io, allocator, path, .{})).baseline;
     try testing.expectEqualStrings("1", loaded.targets.get("unit").?.get("src/a.ts").?);
 }
 
 test "loadBaseline of a missing or damaged file is an empty baseline" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -186,14 +186,14 @@ test "loadBaseline of a missing or damaged file is an empty baseline" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
     try temporary.write("damaged.json", "{ not json");
 
-    const missing = try baseline_store.loadBaseline(io, allocator, try temporary.join(allocator, "gone.json"));
+    const missing = try baseline_store.loadBaseline(io, allocator, try temporary.join(allocator, "gone.json"), .{});
     try testing.expectEqual(@as(usize, 0), missing.baseline.targets.count());
 
-    const damaged = try baseline_store.loadBaseline(io, allocator, try temporary.join(allocator, "damaged.json"));
+    const damaged = try baseline_store.loadBaseline(io, allocator, try temporary.join(allocator, "damaged.json"), .{});
     try testing.expectEqual(@as(usize, 0), damaged.baseline.targets.count());
 
     //
@@ -205,7 +205,7 @@ test "loadBaseline of a missing or damaged file is an empty baseline" {
 }
 
 test "captureTargets records a target without touching the others" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -213,11 +213,11 @@ test "captureTargets records a target without touching the others" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
     const path = try temporary.join(allocator, "baseline.json");
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
 
     const first = try baselinesFor(allocator, &.{.{ "unit", &.{.{ "src/a.ts", "1" }} }});
     try baseline_store.captureTargets(io, allocator, path, &first, try file_hashes_test.fromPairs(allocator, &.{.{ "src/a.ts", "1" }}), &fail);
@@ -229,14 +229,14 @@ test "captureTargets records a target without touching the others" {
     // Both are there. The second capture read what the first wrote and added to it, which is what
     // stops one target's capture erasing another's.
     //
-    var loaded = (try baseline_store.loadBaseline(io, allocator, path)).baseline;
+    var loaded = (try baseline_store.loadBaseline(io, allocator, path, .{})).baseline;
     try testing.expectEqual(@as(usize, 2), loaded.targets.count());
     try testing.expectEqualStrings("1", loaded.targets.get("unit").?.get("src/a.ts").?);
     try testing.expectEqualStrings("2", loaded.targets.get("docs").?.get("docs/g.md").?);
 }
 
 test "captureTargets replaces a target's record when it is captured again" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -244,11 +244,11 @@ test "captureTargets replaces a target's record when it is captured again" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
     const path = try temporary.join(allocator, "baseline.json");
 
-    var fail = Failure.init(allocator);
+    var fail = Failure.init(allocator, .{});
 
     const before = try baselinesFor(allocator, &.{.{ "unit", &.{ .{ "src/a.ts", "1" }, .{ "src/gone.ts", "2" } } }});
     try baseline_store.captureTargets(io, allocator, path, &before, .empty, &fail);
@@ -256,13 +256,13 @@ test "captureTargets replaces a target's record when it is captured again" {
     const after = try baselinesFor(allocator, &.{.{ "unit", &.{.{ "src/a.ts", "changed" }} }});
     try baseline_store.captureTargets(io, allocator, path, &after, .empty, &fail);
 
-    var loaded = (try baseline_store.loadBaseline(io, allocator, path)).baseline;
+    var loaded = (try baseline_store.loadBaseline(io, allocator, path, .{})).baseline;
     try testing.expectEqual(@as(usize, 1), loaded.targets.get("unit").?.count());
     try testing.expectEqualStrings("changed", loaded.targets.get("unit").?.get("src/a.ts").?);
 }
 
 test "baselineReset writes an empty baseline rather than deleting the file" {
-    var test_io = files.TestIo.init();
+    var test_io = files.TestIo.init(.{});
     defer test_io.deinit();
     const io = test_io.io();
 
@@ -270,7 +270,7 @@ test "baselineReset writes an empty baseline rather than deleting the file" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var temporary = try files.TemporaryDir.create(io);
+    var temporary = try files.TemporaryDir.create(io, .{});
     defer temporary.destroy();
     const path = try temporary.join(allocator, "baseline.json");
 
@@ -278,12 +278,12 @@ test "baselineReset writes an empty baseline rather than deleting the file" {
         .targets = try baselinesFor(allocator, &.{.{ "unit", &.{.{ "src/a.ts", "1" }} }}),
         .files = .empty,
     };
-    try baseline_store.saveBaseline(io, allocator, path, &baseline);
+    try baseline_store.saveBaseline(io, allocator, path, &baseline, .{});
 
-    try baseline_store.baselineReset(io, allocator, path);
+    try baseline_store.baselineReset(io, allocator, path, .{});
 
-    try testing.expect(files.fileExists(io, path));
-    var loaded = (try baseline_store.loadBaseline(io, allocator, path)).baseline;
+    try testing.expect(files.fileExists(io, path, .{}));
+    var loaded = (try baseline_store.loadBaseline(io, allocator, path, .{})).baseline;
     try testing.expectEqual(@as(usize, 0), loaded.targets.count());
     try testing.expectEqual(@as(usize, 0), loaded.files.count());
 }

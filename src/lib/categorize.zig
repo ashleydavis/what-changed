@@ -1,4 +1,13 @@
 const std = @import("std");
+const annotate_mod = @import("log");
+
+//
+// The branch markers a fault run reads back. `an` is a compile-time flag: the binary people run is
+// built with it off, so every `if (an) annotate(...)` below compiles to nothing there.
+//
+const Log = annotate_mod.Log;
+const an = annotate_mod.an;
+const annotate = annotate_mod.annotate;
 const config_module = @import("config.zig");
 const baseline_store = @import("baseline_store.zig");
 const changed_files = @import("changed_files.zig");
@@ -72,18 +81,20 @@ pub const CategorizedChanges = struct {
 //
 // Returns every path a target watches: its own paths plus the ones every target watches.
 //
-pub fn watchedPathsFor(allocator: std.mem.Allocator, config: *const Config, target: *const TargetConfig) std.mem.Allocator.Error![][]const u8 {
+pub fn watchedPathsFor(allocator: std.mem.Allocator, config: *const Config, target: *const TargetConfig, log: Log) std.mem.Allocator.Error![][]const u8 {
     var merged: std.StringArrayHashMapUnmanaged(void) = .empty;
 
     for (target.paths) |watched_path| {
+        if (an) annotate(log, "watchedPathsFor-own-iteration", "", .{});
         try merged.put(allocator, watched_path, {});
     }
     for (config.always) |watched_path| {
+        if (an) annotate(log, "watchedPathsFor-always-iteration", "", .{});
         try merged.put(allocator, watched_path, {});
     }
 
     const paths = try allocator.dupe([]const u8, merged.keys());
-    std.mem.sort([]const u8, paths, {}, file_hashes_module.lessThanPath);
+    std.mem.sort([]const u8, paths, file_hashes_module.Ordering{ .log = log }, file_hashes_module.lessThanPath);
     return paths;
 }
 
@@ -94,8 +105,11 @@ pub fn watchedPathsFor(allocator: std.mem.Allocator, config: *const Config, targ
 // stops "src" matching "src-generated/a.ts": without it any path that merely starts with the same
 // letters would count, and a target would be reported for changes it does not watch.
 //
-pub fn isUnderWatchedPath(file_path: []const u8, watched_path: []const u8) bool {
-    if (std.mem.eql(u8, file_path, watched_path)) return true;
+pub fn isUnderWatchedPath(file_path: []const u8, watched_path: []const u8, log: Log) bool {
+    if (std.mem.eql(u8, file_path, watched_path)) {
+        if (an) annotate(log, "isUnderWatchedPath-the-file-itself", "", .{});
+        return true;
+    }
     return file_path.len > watched_path.len and
         std.mem.startsWith(u8, file_path, watched_path) and
         file_path[watched_path.len] == '/';
@@ -104,9 +118,13 @@ pub fn isUnderWatchedPath(file_path: []const u8, watched_path: []const u8) bool 
 //
 // True when a file falls under any of the watched paths.
 //
-pub fn isWatchedBy(file_path: []const u8, watched_paths: []const []const u8) bool {
+pub fn isWatchedBy(file_path: []const u8, watched_paths: []const []const u8, log: Log) bool {
     for (watched_paths) |watched_path| {
-        if (isUnderWatchedPath(file_path, watched_path)) return true;
+        if (an) annotate(log, "isWatchedBy-watched-iteration", "", .{});
+        if (isUnderWatchedPath(file_path, watched_path, log)) {
+            if (an) annotate(log, "isWatchedBy-watched-by-this-one", "", .{});
+            return true;
+        }
     }
     return false;
 }
@@ -119,11 +137,18 @@ pub fn isWatchedBy(file_path: []const u8, watched_paths: []const []const u8) boo
 // that only exists on one operating system, and a machine without it cannot run them however much
 // has changed. That is why nothing overrides this, including a caller's own force flag.
 //
-pub fn targetAppliesToPlatform(target: *const TargetConfig, platform: []const u8) bool {
-    if (target.platforms.len == 0) return true;
+pub fn targetAppliesToPlatform(target: *const TargetConfig, platform: []const u8, log: Log) bool {
+    if (target.platforms.len == 0) {
+        if (an) annotate(log, "targetAppliesToPlatform-every-platform", "", .{});
+        return true;
+    }
 
     for (target.platforms) |declared| {
-        if (std.mem.eql(u8, declared, platform)) return true;
+        if (an) annotate(log, "targetAppliesToPlatform-platforms-iteration", "", .{});
+        if (std.mem.eql(u8, declared, platform)) {
+            if (an) annotate(log, "targetAppliesToPlatform-this-one", "", .{});
+            return true;
+        }
     }
     return false;
 }
@@ -131,12 +156,14 @@ pub fn targetAppliesToPlatform(target: *const TargetConfig, platform: []const u8
 //
 // Narrows a set of file hashes to those falling under the given watched paths.
 //
-pub fn filesUnderWatchedPaths(allocator: std.mem.Allocator, hashes: *const FileHashes, watched_paths: []const []const u8) std.mem.Allocator.Error!FileHashes {
+pub fn filesUnderWatchedPaths(allocator: std.mem.Allocator, hashes: *const FileHashes, watched_paths: []const []const u8, log: Log) std.mem.Allocator.Error!FileHashes {
     var under: FileHashes = .empty;
 
     var walker = hashes.iterator();
     while (walker.next()) |entry| {
-        if (isWatchedBy(entry.key_ptr.*, watched_paths)) {
+        if (an) annotate(log, "filesUnderWatchedPaths-files-iteration", "", .{});
+        if (isWatchedBy(entry.key_ptr.*, watched_paths, log)) {
+            if (an) annotate(log, "filesUnderWatchedPaths-watched", "", .{});
             try under.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
     }
@@ -150,10 +177,12 @@ pub fn filesUnderWatchedPaths(allocator: std.mem.Allocator, hashes: *const FileH
 // The same rule as `filesUnderWatchedPaths`, for the files that have no hash to carry: a file that
 // could not be read still belongs to whichever targets watch it, and takes its reason with it.
 //
-pub fn unreadableUnderWatchedPaths(allocator: std.mem.Allocator, unreadable: []const UnreadableFile, watched_paths: []const []const u8) std.mem.Allocator.Error![]UnreadableFile {
+pub fn unreadableUnderWatchedPaths(allocator: std.mem.Allocator, unreadable: []const UnreadableFile, watched_paths: []const []const u8, log: Log) std.mem.Allocator.Error![]UnreadableFile {
     var under: std.ArrayList(UnreadableFile) = .empty;
     for (unreadable) |file| {
-        if (isWatchedBy(file.path, watched_paths)) {
+        if (an) annotate(log, "unreadableUnderWatchedPaths-files-iteration", "", .{});
+        if (isWatchedBy(file.path, watched_paths, log)) {
+            if (an) annotate(log, "unreadableUnderWatchedPaths-watched", "", .{});
             try under.append(allocator, file);
         }
     }
@@ -163,10 +192,12 @@ pub fn unreadableUnderWatchedPaths(allocator: std.mem.Allocator, unreadable: []c
 //
 // The other half of `unreadableUnderWatchedPaths`: the unreadable files no target watches.
 //
-pub fn unreadableNotUnderWatchedPaths(allocator: std.mem.Allocator, unreadable: []const UnreadableFile, watched_paths: []const []const u8) std.mem.Allocator.Error![]UnreadableFile {
+pub fn unreadableNotUnderWatchedPaths(allocator: std.mem.Allocator, unreadable: []const UnreadableFile, watched_paths: []const []const u8, log: Log) std.mem.Allocator.Error![]UnreadableFile {
     var outside: std.ArrayList(UnreadableFile) = .empty;
     for (unreadable) |file| {
-        if (!isWatchedBy(file.path, watched_paths)) {
+        if (an) annotate(log, "unreadableNotUnderWatchedPaths-files-iteration", "", .{});
+        if (!isWatchedBy(file.path, watched_paths, log)) {
+            if (an) annotate(log, "unreadableNotUnderWatchedPaths-not-watched", "", .{});
             try outside.append(allocator, file);
         }
     }
@@ -181,24 +212,27 @@ pub fn unreadableNotUnderWatchedPaths(allocator: std.mem.Allocator, unreadable: 
 // is what lets a caller run one suite, capture just that target, and leave every other target
 // correctly reported as still needing to run.
 //
-pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, hashes: *const FileHashes, unreadable: []const UnreadableFile, baseline: *const Baseline, platform: []const u8) std.mem.Allocator.Error!CategorizedChanges {
+pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, hashes: *const FileHashes, unreadable: []const UnreadableFile, baseline: *const Baseline, platform: []const u8, log: Log) std.mem.Allocator.Error!CategorizedChanges {
     var targets: std.ArrayList(TargetChanges) = .empty;
 
     for (config.targets) |*target| {
-        const watched_paths = try watchedPathsFor(allocator, config, target);
-        const applies_here = targetAppliesToPlatform(target, platform);
+        if (an) annotate(log, "categorizeChanges-targets-iteration", "", .{});
+        const watched_paths = try watchedPathsFor(allocator, config, target, log);
+        const applies_here = targetAppliesToPlatform(target, platform, log);
         const recorded = baseline.targets.get(target.name);
 
         var changes: []ChangedFile = &.{};
         if (applies_here) {
-            var under = try filesUnderWatchedPaths(allocator, hashes, watched_paths);
+            if (an) annotate(log, "categorizeChanges-runs-here", "", .{});
+            var under = try filesUnderWatchedPaths(allocator, hashes, watched_paths, log);
             const empty: FileHashes = .empty;
             const compared_against = if (recorded) |*existing| existing else &empty;
             changes = try changed_files.diffFileHashes(
                 allocator,
                 &under,
                 compared_against,
-                try unreadableUnderWatchedPaths(allocator, unreadable, watched_paths),
+                try unreadableUnderWatchedPaths(allocator, unreadable, watched_paths, log),
+                log,
             );
         }
 
@@ -218,13 +252,16 @@ pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, ha
     //
     var all_watched_paths: std.ArrayList([]const u8) = .empty;
     for (targets.items) |target| {
+        if (an) annotate(log, "categorizeChanges-watched-iteration", "", .{});
         try all_watched_paths.appendSlice(allocator, target.watched_paths);
     }
 
     var unwatched: FileHashes = .empty;
     var walker = hashes.iterator();
     while (walker.next()) |entry| {
-        if (!isWatchedBy(entry.key_ptr.*, all_watched_paths.items)) {
+        if (an) annotate(log, "categorizeChanges-files-iteration", "", .{});
+        if (!isWatchedBy(entry.key_ptr.*, all_watched_paths.items, log)) {
+            if (an) annotate(log, "categorizeChanges-unwatched", "", .{});
             try unwatched.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
     }
@@ -233,12 +270,13 @@ pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, ha
     // Files no target watches have no target record to compare against, so they are measured against
     // the whole-tree record instead. That is the only thing it is used for.
     //
-    var recorded_unwatched = try unwatchedOnly(allocator, &baseline.files, all_watched_paths.items);
+    var recorded_unwatched = try unwatchedOnly(allocator, &baseline.files, all_watched_paths.items, log);
     const unwatched_files = try changed_files.diffFileHashes(
         allocator,
         &unwatched,
         &recorded_unwatched,
-        try unreadableNotUnderWatchedPaths(allocator, unreadable, all_watched_paths.items),
+        try unreadableNotUnderWatchedPaths(allocator, unreadable, all_watched_paths.items, log),
+        log,
     );
 
     return .{
@@ -251,12 +289,14 @@ pub fn categorizeChanges(allocator: std.mem.Allocator, config: *const Config, ha
 // Narrows a whole-tree record to the files that no target watches, so a deletion of a watched file
 // is not also reported as an unwatched change.
 //
-pub fn unwatchedOnly(allocator: std.mem.Allocator, recorded: *const FileHashes, all_watched_paths: []const []const u8) std.mem.Allocator.Error!FileHashes {
+pub fn unwatchedOnly(allocator: std.mem.Allocator, recorded: *const FileHashes, all_watched_paths: []const []const u8, log: Log) std.mem.Allocator.Error!FileHashes {
     var unwatched: FileHashes = .empty;
 
     var walker = recorded.iterator();
     while (walker.next()) |entry| {
-        if (!isWatchedBy(entry.key_ptr.*, all_watched_paths)) {
+        if (an) annotate(log, "unwatchedOnly-recorded-iteration", "", .{});
+        if (!isWatchedBy(entry.key_ptr.*, all_watched_paths, log)) {
+            if (an) annotate(log, "unwatchedOnly-unwatched", "", .{});
             try unwatched.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
     }
@@ -270,8 +310,8 @@ pub fn unwatchedOnly(allocator: std.mem.Allocator, recorded: *const FileHashes, 
 // `hashes` holds only files that were read, so a file that is gone or unreadable is already absent
 // and a capture records real content hashes and nothing else.
 //
-pub fn capturedFilesFor(allocator: std.mem.Allocator, config: *const Config, target: *const TargetConfig, hashes: *const FileHashes) std.mem.Allocator.Error!FileHashes {
-    return filesUnderWatchedPaths(allocator, hashes, try watchedPathsFor(allocator, config, target));
+pub fn capturedFilesFor(allocator: std.mem.Allocator, config: *const Config, target: *const TargetConfig, hashes: *const FileHashes, log: Log) std.mem.Allocator.Error!FileHashes {
+    return filesUnderWatchedPaths(allocator, hashes, try watchedPathsFor(allocator, config, target, log), log);
 }
 
 test {
