@@ -9,7 +9,7 @@
 
   ```toml
   [tools]
-  "github:ashleydavis/what-changed" = "latest"
+  "github:ashleydavis/what-changed" = "0.0.6"   # pin an exact release, never "latest"
   ```
 
   Or download a platform archive from https://github.com/ashleydavis/what-changed/releases, extract, `chmod +x what-changed`, put it on the PATH.
@@ -62,6 +62,8 @@ what-changed targets
 ```
 
 Prints affected target names, one per line, nothing if there is nothing to run. Targets excluded by `platforms` are never printed. With no baseline recorded, every runnable target is printed.
+
+`what-changed targets list` prints every target that can run on this machine, changed or not. Use it for a "run everything" option such as `--force`.
 
 **Record a pass:**
 
@@ -117,6 +119,41 @@ done
 ```
 
 Working examples: [`scripts/test-everything.sh`](../scripts/test-everything.sh) and [`examples/example-project/`](../examples/example-project/).
+
+## Running it on every commit (pre-commit hook)
+
+The usual reason to set this up: a hook that runs the project's driver script, so tests happen before anything is committed and only the changed targets cost time. Refuse the commit when the script fails.
+
+`.githooks/pre-commit`:
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+
+REPO_DIR="$(git rev-parse --show-toplevel)"
+
+# Git exports these to hooks. Tests that run git in throwaway fixtures (init, add, commit) would
+# otherwise act on this repository's index.
+unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_PREFIX
+
+cd "$REPO_DIR"
+
+if ! ./scripts/test-everything.sh; then
+    echo "pre-commit FAILED. Commit anyway with: git commit --no-verify" >&2
+    exit 1
+fi
+```
+
+Make it executable (`chmod +x`). The file must be named exactly `pre-commit`, with no extension.
+
+Git only runs hooks from the clone's own hooks directory, which is not version controlled, so a checked-in `.githooks/` does nothing until each clone enables it. Check the hook in and add a script that every clone runs once. Two ways to enable it:
+
+- Point git at the checked-in directory: `git config core.hooksPath .githooks` (relative, so it also works in worktrees). This changes git configuration, so an agent must not run it unless the human asked for it.
+- Symlink it: `ln -sfn "$(pwd)/.githooks/pre-commit" "$(git rev-parse --git-common-dir)/hooks/pre-commit"`. No configuration changes.
+
+Bypass one commit with `git commit --no-verify`. A change that no target watches (for example a docs-only change) runs nothing and the commit goes straight through.
+
+Working examples: [`.githooks/pre-commit`](../.githooks/pre-commit) and [`scripts/install-hooks.sh`](../scripts/install-hooks.sh).
 
 ## The rest of the commands
 
